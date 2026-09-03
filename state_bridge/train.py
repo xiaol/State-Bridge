@@ -19,7 +19,7 @@ import torch
 from .bridge import build_bridge, save_bridge
 from .config import dump_config, run_dir
 from .data import Example, load_examples, load_sender_generations
-from .injection import build_receiver_batch, encode_prompts, encode_targets
+from .injection import build_receiver_batch, encode_prompts, encode_targets, forward_with_prefix, generate, greedy_generate_with_prefix
 from .models import LoadedModel, SenderEncoder, load_model
 
 
@@ -49,11 +49,18 @@ class BridgeSystem:
             self.sender = load_model(mcfg["sender"]["path"], mcfg["sender"]["device"], mcfg["sender"]["dtype"], name="sender")
             self.encoder = SenderEncoder(self.sender, mcfg["sender_layers"], mcfg["max_prompt_tokens"])
         in_dim = self.encoder.out_dim if self.encoder else 1
-        if bridge is None:
-            bridge = build_bridge(cfg["bridge"], in_dim, self.receiver.hidden_size, target_rms=self.receiver.embedding_rms)
-        self.bridge = bridge.to(self.receiver.device)
         self.position = cfg["bridge"]["position"]
         self.max_prompt = mcfg["max_prompt_tokens"]
+        rc = self.receiver.model.config
+        rc = getattr(rc, "text_config", None) or rc
+        kv_dims = (rc.num_hidden_layers, rc.num_key_value_heads, getattr(rc, "head_dim", None) or rc.hidden_size // rc.num_attention_heads)
+        fresh = bridge is None
+        if fresh:
+            bridge = build_bridge(cfg["bridge"], in_dim, self.receiver.hidden_size, target_rms=self.receiver.embedding_rms, kv_dims=kv_dims)
+        self.bridge = bridge.to(self.receiver.device)
+        self.injection = getattr(self.bridge, "injection", "embed")
+        if fresh and self.bridge.kv_head is not None:
+            self.bridge.kv_head.calibrate(self.receiver, self.receiver.chat_prompt("Natalia sold clips to 48 of her friends in April, and then she sold half as many clips in May. How many clips did Natalia sell altogether in April and May?"))
 
     # ------------------------------------------------------------ helpers
     def sender_prompts(self, batch: list[Example], prefixes: list[str] | None = None) -> list[str]:
@@ -63,6 +70,34 @@ class BridgeSystem:
     def receiver_prompt_ids(self, batch: list[Example], prefixes: list[str] | None = None) -> list[list[int]]:
         texts = [self.receiver.chat_prompt(ex.user_prompt, prefixes[i] if prefixes else None) for i, ex in enumerate(batch)]
         return encode_prompts(self.receiver, texts, self.max_prompt)
+
+    def receiver_loss(self, batch: list[Example], slots, slot_mask, targets: list[str], max_target_tokens: int | None):
+        """Cross-entropy of the frozen receiver on ``targets`` given the slots (either injection mode)."""
+        r = self.receiver
+        prompt_ids = self.receiver_prompt_ids(batch)
+        target_ids = encode_targets(r, targets, max_target_tokens)
+        with torch.autocast(device_type=r.device.type, dtype=torch.bfloat16, enabled=r.device.type == "cuda"):
+            if self.injection == "kv":
+                rb = build_receiver_batch(r, prompt_ids, None, None, target_ids, self.position, pad_left=False)
+                out = forward_with_prefix(r, self.bridge.kv_head(slots), slot_mask, rb.inputs_embeds, rb.attention_mask, rb.labels)
+            else:
+                rb = build_receiver_batch(r, prompt_ids, slots, slot_mask, target_ids, self.position, pad_left=False)
+                out = r.model(inputs_embeds=rb.inputs_embeds, attention_mask=rb.attention_mask, labels=rb.labels, use_cache=False)
+        return out.loss
+
+    @torch.no_grad()
+    def receiver_generate(self, batch: list[Example], slots, slot_mask, max_new_tokens: int, prefixes: list[str] | None = None) -> list[str]:
+        """Greedy generation; ``slots=None`` means the receiver runs alone (optionally continuing ``prefixes``)."""
+        r = self.receiver
+        prompt_ids = self.receiver_prompt_ids(batch, prefixes)
+        if slots is None:
+            rb = build_receiver_batch(r, prompt_ids, None, None, None, self.position, pad_left=True)
+            return generate(r, rb, max_new_tokens)
+        if self.injection == "kv":
+            rb = build_receiver_batch(r, prompt_ids, None, None, None, self.position, pad_left=True)
+            return greedy_generate_with_prefix(r, self.bridge.kv_head(slots), slot_mask, rb.inputs_embeds, rb.attention_mask, max_new_tokens)
+        rb = build_receiver_batch(r, prompt_ids, slots, slot_mask, None, self.position, pad_left=True)
+        return generate(r, rb, max_new_tokens)
 
     def slots_for(self, batch: list[Example], prefixes: list[str] | None = None, sender_hidden=None, sender_mask=None):
         """Run sender prefill (unless states are given) and the bridge.  Returns (slots, slot_mask)."""
@@ -100,7 +135,14 @@ def train(cfg: dict) -> Path:
     bs = tcfg["batch_size"]
     steps_per_epoch = math.ceil(len(train_ex) / bs)
     total = tcfg["max_steps"] or steps_per_epoch * tcfg["epochs"]
-    opt = torch.optim.AdamW(bridge.parameters(), lr=tcfg["lr"], weight_decay=tcfg["weight_decay"], betas=(0.9, 0.98))
+    # gates and gains: higher learning rate, no weight decay, so the sender-dependent part can grow
+    fast = [p for n, p in bridge.named_parameters() if n.split(".")[-1] in ("gate", "gain")]
+    slow = [p for n, p in bridge.named_parameters() if n.split(".")[-1] not in ("gate", "gain")]
+    opt = torch.optim.AdamW(
+        [{"params": slow, "lr": tcfg["lr"], "weight_decay": tcfg["weight_decay"]}, {"params": fast, "lr": tcfg["lr"] * tcfg.get("gate_lr_mult", 10.0), "weight_decay": 0.0}],
+        betas=(0.9, 0.98),
+    )
+    base_lrs = [g["lr"] for g in opt.param_groups]
     log = open(out / "train_log.jsonl", "a")
 
     def handoff_prefixes(batch: list[Example]) -> list[str] | None:
@@ -121,12 +163,7 @@ def train(cfg: dict) -> Path:
 
     def loss_on(batch: list[Example], prefixes=None) -> torch.Tensor:
         slots, slot_mask = system.slots_for(batch, prefixes)
-        prompt_ids = system.receiver_prompt_ids(batch)
-        target_ids = encode_targets(receiver, [ex.solution for ex in batch], dcfg["max_target_tokens"])
-        rb = build_receiver_batch(receiver, prompt_ids, slots, slot_mask, target_ids, system.position, pad_left=False)
-        with torch.autocast(device_type=receiver.device.type, dtype=torch.bfloat16, enabled=receiver.device.type == "cuda"):
-            outp = receiver.model(inputs_embeds=rb.inputs_embeds, attention_mask=rb.attention_mask, labels=rb.labels, use_cache=False)
-        return outp.loss
+        return system.receiver_loss(batch, slots, slot_mask, [ex.solution for ex in batch], dcfg["max_target_tokens"])
 
     @torch.no_grad()
     def validate() -> float:
@@ -148,8 +185,8 @@ def train(cfg: dict) -> Path:
         rng.shuffle(train_ex)
         for i in range(0, len(train_ex), bs):
             batch = train_ex[i : i + bs]
-            for g in opt.param_groups:
-                g["lr"] = lr_at(step, total, tcfg["warmup_steps"], tcfg["lr"])
+            for g, b in zip(opt.param_groups, base_lrs):
+                g["lr"] = lr_at(step, total, tcfg["warmup_steps"], b)
             loss = loss_on(batch, handoff_prefixes(batch))
             opt.zero_grad(set_to_none=True)
             loss.backward()

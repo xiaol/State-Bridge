@@ -26,6 +26,10 @@ DEFAULTS: dict[str, Any] = {
     "bridge": {
         # resampler | per_token | prompt_tuning (control: same slots, no sender input)
         "type": "resampler",
+        # embed: slots enter the receiver's input-embedding sequence (soft tokens)
+        # kv:    slots are projected to key/value prefixes in every receiver layer (deep injection)
+        "injection": "kv",
+        "kv_gate_init": 0.3,
         "num_slots": 64,
         "d_model": 1024,
         "depth": 2,
@@ -66,6 +70,7 @@ DEFAULTS: dict[str, Any] = {
         "weight_decay": 0.01,
         "warmup_steps": 50,
         "grad_clip": 1.0,
+        "gate_lr_mult": 10.0,
         "log_every": 20,
         "eval_every": 200,
         "max_steps": None,

@@ -7,9 +7,10 @@ models:
   receiver: {path: /root/x/models/Qwen3-0.6B, device: "cuda:0", dtype: bfloat16}
   sender_layers: [-8, -4]
   max_prompt_tokens: 512
-bridge: {type: resampler, num_slots: 64, d_model: 1024, depth: 2, heads: 8, position: prefix}
-data: {name: gsm8k, path: runs/data/gsm8k, val_size: 200, max_target_tokens: 256}
-train: {epochs: 2, batch_size: 16, lr: 2.0e-4, warmup_steps: 50, log_every: 20, eval_every: 200}
+bridge: {type: resampler, injection: kv, num_slots: 64, d_model: 1024, depth: 2, heads: 8, residual_base: true, kv_gate_init: 0.3, position: prefix}
+data: {name: gsm8k, path: runs/data/gsm8k, val_size: 200, max_target_tokens: 448,
+       targets: runs/qwen3p5_9b_to_qwen3_0p6b/targets_train.jsonl}
+train: {epochs: 2, batch_size: 16, lr: 3.0e-4, warmup_steps: 50, log_every: 20, eval_every: 200}
 eval: {batch_size: 48, max_new_tokens: 384, sender_max_new_tokens: 512, modes: [receiver, bridged, bridged_shuffled, bridged_ablated, sender]}
 handoff: {ks: [0, 16, 32, 64, 128, 256], limit: 300, batch_size: 24}
 geometry: {num_texts: 256, layer_stride: 4}

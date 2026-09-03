@@ -35,21 +35,25 @@ def _read_rows(paths) -> dict[str, dict]:
     return rows
 
 
-def run_precompute(cfg: dict, role: str = "sender", shard: str = "0/1", device: str | None = None, split: str = "train", subset: str | None = None) -> Path:
+def run_precompute(cfg: dict, role: str = "sender", shard: str = "0/1", device: str | None = None, split: str = "train",
+                   subset: str | None = None, tag: str | None = None) -> Path:
+    """``subset``: ``wrong`` = problems the receiver got wrong (all receiver files), or
+    ``wrong:<file>`` to use one specific receiver generation file.  ``tag`` names the output."""
     out = run_dir(cfg)
     i, n = (int(x) for x in shard.split("/"))
     mcfg = cfg["models"][role]
     lm = load_model(mcfg["path"], device or mcfg["device"], mcfg["dtype"], role)
     examples = load_examples(cfg["data"], split, cfg["data"]["train_limit"], cfg["seed"])
-    if subset == "wrong":
-        recv = _read_rows(sorted(out.glob(f"gen_receiver_{split}.*.jsonl")))
+    if subset and subset.startswith("wrong"):
+        files = [subset.split(":", 1)[1]] if ":" in subset else sorted(out.glob(f"gen_receiver_{split}.*.jsonl"))
+        recv = _read_rows(files)
         if not recv:
             raise FileNotFoundError("subset=wrong needs receiver generations first")
         examples = [ex for ex in examples if ex.id in recv and not recv[ex.id]["correct"]]
     examples = examples[i::n]
     bs = cfg["eval"]["batch_size"]
     mnt = cfg["eval"]["sender_max_new_tokens"] if role == "sender" else cfg["eval"]["max_new_tokens"]
-    path = out / f"gen_{role}_{split}.{i}of{n}.jsonl"
+    path = out / f"gen_{role}_{split}.{tag or f'{i}of{n}'}.jsonl"
     n_ok = 0
     with open(path, "w") as f:
         for j in range(0, len(examples), bs):

@@ -103,9 +103,12 @@ prompt tuning and learns sender-dependent deviations on top, which trains far be
 frozen receiver than sender-dependent slots from scratch (see `docs/results.md`).
 `PromptTuningBridge` is the control: same slots, learned constants, sender ignored.
 
-**Receiver side.** Slots are inserted into the receiver's input-embedding sequence
-(`bridge.position: prefix` before the prompt, or `suffix` between prompt and answer). The
-receiver attends to them like tokens it cannot read. Generation uses `generate(inputs_embeds=…)`.
+**Receiver side.** Two injection modes. `bridge.injection: kv` (default): the slots are
+projected into key/value prefixes for every receiver layer and placed in its cache before the
+prompt, so each attention layer can read the transferred state directly (prefix tuning with a
+sender-computed prefix). `bridge.injection: embed`: the slots are inserted into the receiver's
+input-embedding sequence as soft tokens (`bridge.position: prefix` or `suffix`). The embedding
+channel proved too weak for a frozen 0.6B receiver (see `docs/results.md`).
 
 **Training.** Cross-entropy of the frozen receiver on a target solution, answer tokens only.
 Gradients flow through the frozen receiver into the slots and the bridge. AdamW, cosine
@@ -151,8 +154,8 @@ docs/            source-notes.md, design.md, results.md
 ## Differences from the original and known limits
 
 - Scale: 9B -> 0.6B instead of 753B -> 4B. Same experiment shape, smaller absolute gap.
-- Injection is at the receiver's input-embedding layer; the write-up's "prefill state" could
-  also mean per-layer KV injection. `injection.py` is the single place to add that.
+- Injection is into the receiver's attention cache (or embeddings); the receiver's own layers
+  still process its own prompt tokens.
 - The "equivalent mid-sized model" cost ratio interpolates accuracy in log-parameters between
   the two measured models; the original presumably measured a real mid-sized model.
 - Training-time use of the channel (distillation, specialisation, several models training

@@ -192,15 +192,19 @@ def apply_targets(examples: list[Example], path: str) -> None:
 
 
 def load_sender_generations(path: str | None) -> dict[str, str]:
-    """id -> sender-generated solution text (from `precompute`)."""
+    """id -> sender-generated solution text (from `precompute`); ``path`` may be a glob over shards."""
     if not path:
         return {}
+    import glob
+
+    files = sorted(glob.glob(path)) or [path]
     out = {}
-    with open(path) as f:
-        for line in f:
-            if line.strip():
-                r = json.loads(line)
-                out[r["id"]] = r["text"]
+    for fp in files:
+        with open(fp) as f:
+            for line in f:
+                if line.strip():
+                    r = json.loads(line)
+                    out[r["id"]] = r["text"]
     return out
 
 

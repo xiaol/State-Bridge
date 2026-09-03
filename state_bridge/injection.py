@@ -113,3 +113,62 @@ def generate(receiver: LoadedModel, batch: ReceiverBatch, max_new_tokens: int) -
         pad_token_id=receiver.tokenizer.pad_token_id,
     )
     return receiver.tokenizer.batch_decode(gen, skip_special_tokens=True)
+
+
+# ---------------------------------------------------------------- deep (key/value) injection
+
+
+def prefix_cache(kv: torch.Tensor, dtype: torch.dtype):
+    """``kv``: [L, 2, B, H, K, D] -> a DynamicCache holding K prefix positions per layer."""
+    from transformers import DynamicCache
+
+    return DynamicCache(ddp_cache_data=[(kv[l, 0].to(dtype), kv[l, 1].to(dtype)) for l in range(kv.shape[0])])
+
+
+def _positions(attn: torch.Tensor) -> torch.Tensor:
+    return (attn.long().cumsum(1) - 1).clamp(min=0)
+
+
+def forward_with_prefix(receiver: LoadedModel, kv: torch.Tensor, prefix_mask: torch.Tensor, token_embeds: torch.Tensor, token_mask: torch.Tensor, labels: torch.Tensor | None):
+    """Receiver forward over ``token_embeds`` with the bridge's key/value prefix in every layer."""
+    K = kv.shape[4]
+    cache = prefix_cache(kv, receiver.dtype)
+    attn = torch.cat([prefix_mask.long().to(token_mask.device), token_mask], 1)
+    position_ids = _positions(attn)[:, K:]
+    return receiver.model(inputs_embeds=token_embeds, attention_mask=attn, position_ids=position_ids, past_key_values=cache, labels=labels, use_cache=True)
+
+
+@torch.no_grad()
+def greedy_generate_with_prefix(receiver: LoadedModel, kv: torch.Tensor, prefix_mask: torch.Tensor, token_embeds: torch.Tensor, token_mask: torch.Tensor, max_new_tokens: int) -> list[str]:
+    """Greedy decoding with a key/value prefix; ``token_embeds`` are left-padded prompts."""
+    tok = receiver.tokenizer
+    gc = receiver.model.generation_config
+    eos_ids = gc.eos_token_id if isinstance(gc.eos_token_id, list) else [gc.eos_token_id]
+    eos_ids = [e for e in eos_ids if e is not None] or [tok.eos_token_id]
+    eos = torch.tensor(eos_ids, device=receiver.device)
+    K = kv.shape[4]
+    cache = prefix_cache(kv, receiver.dtype)
+    attn = torch.cat([prefix_mask.long().to(token_mask.device), token_mask], 1)
+    pos_all = _positions(attn)
+    out = receiver.model(inputs_embeds=token_embeds, attention_mask=attn, position_ids=pos_all[:, K:], past_key_values=cache, use_cache=True, logits_to_keep=1)
+    B = token_embeds.shape[0]
+    nxt = out.logits[:, -1].argmax(-1)
+    cur = pos_all[:, -1] + 1
+    finished = torch.zeros(B, dtype=torch.bool, device=receiver.device)
+    generated = []
+    for _ in range(max_new_tokens):
+        nxt = torch.where(finished, torch.full_like(nxt, tok.pad_token_id), nxt)
+        generated.append(nxt)
+        finished |= torch.isin(nxt, eos)
+        if bool(finished.all()):
+            break
+        attn = torch.cat([attn, torch.ones(B, 1, dtype=attn.dtype, device=attn.device)], 1)
+        out = receiver.model(input_ids=nxt[:, None], attention_mask=attn, position_ids=cur[:, None], past_key_values=cache, use_cache=True, logits_to_keep=1)
+        nxt = out.logits[:, -1].argmax(-1)
+        cur = cur + 1
+    gen = torch.stack(generated, 1).tolist()
+    texts = []
+    for row in gen:
+        cut = next((i for i, t in enumerate(row) if t in eos_ids), len(row))
+        texts.append(tok.decode(row[:cut], skip_special_tokens=True))
+    return texts

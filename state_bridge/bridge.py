@@ -165,30 +165,98 @@ class PromptTuningBridge(BridgeBase):
         return slots, torch.ones(B, self.num_slots, dtype=torch.bool, device=slots.device)
 
 
-def build_bridge(bcfg: dict, in_dim: int, out_dim: int, target_rms: float) -> BridgeBase:
+class KVHead(nn.Module):
+    """Deep injection: turns slots [B, K, d] into key/value prefixes for every receiver layer.
+
+    Output layout [L, 2, B, n_kv_heads, K, head_dim].  Per layer, keys and values are
+    RMS-normalised and rescaled to the receiver's own K/V statistics (``calib``, measured once
+    on a real prompt) times a learnable gain.  A learned constant prefix (the prefix-tuning
+    component, ``base``) is added and the sender-dependent part is multiplied by a per-layer
+    gate.  Soft tokens at the embedding layer are a weak channel into a frozen small model;
+    giving every attention layer direct access to the transferred state is much stronger.
+    """
+
+    def __init__(self, d: int, num_layers: int, num_kv_heads: int, head_dim: int, num_slots: int, gate_init: float = 0.3, residual_base: bool = True):
+        super().__init__()
+        self.L, self.H, self.D, self.K = num_layers, num_kv_heads, head_dim, num_slots
+        self.proj = nn.Linear(d, num_layers * 2 * num_kv_heads * head_dim)
+        self.register_buffer("calib", torch.ones(num_layers, 2))
+        self.gain = nn.Parameter(torch.ones(num_layers, 2))
+        self.gate = nn.Parameter(torch.full((num_layers, 2), float(gate_init)))
+        self.base = nn.Parameter(torch.randn(num_layers, 2, num_slots, num_kv_heads * head_dim)) if residual_base else None
+
+    @staticmethod
+    def _unit(x):
+        return x / (x.pow(2).mean(-1, keepdim=True).sqrt() + 1e-6)
+
+    def forward(self, slots: torch.Tensor) -> torch.Tensor:
+        B, K, _ = slots.shape
+        x = self.proj(slots.float()).view(B, K, self.L, 2, self.H * self.D)
+        x = self._unit(x).permute(2, 3, 0, 1, 4)  # [L, 2, B, K, HD]
+        scale = (self.calib * self.gain)[:, :, None, None, None]
+        out = x * scale * self.gate[:, :, None, None, None]
+        if self.base is not None:
+            if K != self.K:
+                raise ValueError(f"KVHead base expects {self.K} slots, got {K}; set residual_base=false for variable-length bridges")
+            out = out + (self._unit(self.base) * (self.calib * self.gain)[:, :, None, None])[:, :, None]
+        return out.view(self.L, 2, B, K, self.H, self.D).transpose(3, 4)
+
+    @torch.no_grad()
+    def calibrate(self, receiver, text: str) -> None:
+        """Measure the receiver's per-layer key / value RMS on a real prompt."""
+        enc = receiver.tokenizer(text, return_tensors="pt", add_special_tokens=False).to(receiver.device)
+        out = receiver.model(**enc, use_cache=True)
+        cache = out.past_key_values
+        for l in range(self.L):
+            k, v = layer_kv(cache, l)
+            self.calib[l, 0] = k.float().pow(2).mean().sqrt()
+            self.calib[l, 1] = v.float().pow(2).mean().sqrt()
+
+
+def layer_kv(cache, l: int):
+    """Key / value tensors of layer ``l`` across transformers cache API versions."""
+    if hasattr(cache, "layers"):
+        return cache.layers[l].keys, cache.layers[l].values
+    return cache.key_cache[l], cache.value_cache[l]
+
+
+def build_bridge(bcfg: dict, in_dim: int, out_dim: int, target_rms: float, kv_dims: tuple[int, int, int] | None = None) -> BridgeBase:
+    """``kv_dims`` = (num_layers, num_kv_heads, head_dim) of the receiver; required when
+    ``bcfg["injection"] == "kv"``."""
     kind = bcfg["type"]
     common = dict(in_dim=in_dim, out_dim=out_dim, target_rms=target_rms)
     extra = dict(num_prefix=bcfg.get("num_prefix", 0), gate_init=bcfg.get("gate_init", 1.0))
     if kind == "resampler":
-        return ResamplerBridge(
+        bridge = ResamplerBridge(
             num_slots=bcfg["num_slots"], d_model=bcfg["d_model"], depth=bcfg["depth"], heads=bcfg["heads"], dropout=bcfg["dropout"],
             residual_base=bcfg.get("residual_base", False), **extra, **common
         )
-    if kind == "per_token":
-        return PerTokenBridge(d_model=bcfg["d_model"], dropout=bcfg["dropout"], **extra, **common)
-    if kind == "prompt_tuning":
-        return PromptTuningBridge(num_slots=bcfg["num_slots"], **common)
-    raise ValueError(f"unknown bridge type {kind!r}")
+    elif kind == "per_token":
+        bridge = PerTokenBridge(d_model=bcfg["d_model"], dropout=bcfg["dropout"], **extra, **common)
+    elif kind == "prompt_tuning":
+        bridge = PromptTuningBridge(num_slots=bcfg["num_slots"], **common)
+    else:
+        raise ValueError(f"unknown bridge type {kind!r}")
+    bridge.injection = bcfg.get("injection", "embed")
+    bridge.kv_head = None
+    bridge.kv_dims = kv_dims
+    if bridge.injection == "kv":
+        if kv_dims is None:
+            raise ValueError("kv injection needs the receiver's (layers, kv_heads, head_dim)")
+        fixed = getattr(bridge, "num_slots", None)
+        bridge.kv_head = KVHead(out_dim, *kv_dims, num_slots=fixed or 0, gate_init=bcfg.get("kv_gate_init", 0.3),
+                                residual_base=bcfg.get("residual_base", True) and fixed is not None)
+    return bridge
 
 
 def save_bridge(bridge: BridgeBase, cfg: dict, path) -> None:
-    torch.save({"cfg": cfg, "in_dim": bridge.in_dim, "out_dim": bridge.out_dim, "state_dict": bridge.state_dict()}, path)
+    torch.save({"cfg": cfg, "in_dim": bridge.in_dim, "out_dim": bridge.out_dim, "kv_dims": bridge.kv_dims, "state_dict": bridge.state_dict()}, path)
 
 
 def load_bridge(path, map_location="cpu") -> tuple[BridgeBase, dict]:
     ckpt = torch.load(path, map_location=map_location, weights_only=False)
     cfg = ckpt["cfg"]
-    bridge = build_bridge(cfg["bridge"], ckpt["in_dim"], ckpt["out_dim"], target_rms=1.0)
+    bridge = build_bridge(cfg["bridge"], ckpt["in_dim"], ckpt["out_dim"], target_rms=1.0, kv_dims=ckpt.get("kv_dims"))
     missing, unexpected = bridge.load_state_dict(ckpt["state_dict"], strict=False)
     # checkpoints written before the gate existed behave as gate == 1, which is its default init here
     if unexpected or set(missing) - {"gate"}:

@@ -17,7 +17,8 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--shard", default="0/1", help="precompute: i/n")
     p.add_argument("--device", default=None, help="precompute: device override")
     p.add_argument("--role", default="sender", choices=["sender", "receiver"], help="precompute: which model writes")
-    p.add_argument("--subset", default=None, help="precompute: 'wrong' = only problems the receiver got wrong")
+    p.add_argument("--subset", default=None, help="precompute: 'wrong' or 'wrong:<receiver file>' = only problems the receiver got wrong")
+    p.add_argument("--tag", default=None, help="precompute: output file tag (default <i>of<n>)")
     p.add_argument("overrides", nargs="*", help="dotted overrides, e.g. train.lr=1e-4")
     a = p.parse_intermixed_args(argv)  # lets key=value overrides appear before or after flags
     cfg = load_config(a.config, a.overrides)
@@ -46,7 +47,7 @@ def main(argv: list[str] | None = None) -> None:
         run_observe(cfg)
     elif a.command == "precompute":
         from .precompute import run_precompute
-        run_precompute(cfg, a.role, a.shard, a.device, subset=a.subset)
+        run_precompute(cfg, a.role, a.shard, a.device, subset=a.subset, tag=a.tag)
     elif a.command == "targets":
         from .precompute import build_targets
         build_targets(cfg)

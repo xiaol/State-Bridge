@@ -57,15 +57,12 @@ def latent_handoff(system: BridgeSystem, batch: list[Example], prompt_ids, gen_i
     mask = torch.tensor([[1] * len(x) + [0] * (L - len(x)) for x in seqs])
     hidden, m = system.encoder.encode_ids(ids, mask)
     slots, slot_mask = system.slots_for(batch, sender_hidden=hidden, sender_mask=m)
-    rb = build_receiver_batch(system.receiver, system.receiver_prompt_ids(batch), slots, slot_mask, None, system.position, pad_left=True)
-    return generate(system.receiver, rb, max_new_tokens)
+    return system.receiver_generate(batch, slots, slot_mask, max_new_tokens)
 
 
 @torch.no_grad()
 def text_handoff(system: BridgeSystem, batch: list[Example], sender_texts: list[str], max_new_tokens: int) -> list[str]:
-    ids = system.receiver_prompt_ids(batch, prefixes=sender_texts)
-    rb = build_receiver_batch(system.receiver, ids, None, None, None, system.position, pad_left=True)
-    cont = generate(system.receiver, rb, max_new_tokens)
+    cont = system.receiver_generate(batch, None, None, max_new_tokens, prefixes=sender_texts)
     return [s + c for s, c in zip(sender_texts, cont)]
 
 

@@ -43,12 +43,24 @@ receiver works with them directly; no text passes; neither model's weights chang
   to, exactly like soft prompts. Generation uses `generate(inputs_embeds=...)` with left
   padding; training uses right padding and a label mask that only scores the answer tokens.
 
-**Why embedding-level injection.** The write-up says "prefill state" crosses. The most literal
-reading is injecting into the receiver's KV cache at every layer. We chose embedding-level
-injection because it (a) needs no model surgery, so any Hugging Face causal LM is a receiver,
-(b) is length-invariant with the resampler, (c) already lets the receiver's own layers process
-the slots in context with the prompt. Per-layer KV injection is a natural extension
-(see section 8).
+**Two injection modes.** `bridge.injection: embed` places the slots in the receiver's input
+embedding sequence (soft tokens). `bridge.injection: kv` (default) projects the slots, through
+`bridge.KVHead`, into key/value prefixes for *every* receiver layer; the receiver then runs on
+its own prompt with those prefixes in its cache (`injection.forward_with_prefix`,
+`injection.greedy_generate_with_prefix`). Per layer the projected keys and values are
+RMS-normalised and rescaled to the receiver's measured K/V statistics (`KVHead.calibrate` runs
+one real prompt through the receiver at build time), a learned constant prefix is added, and the
+sender-dependent part is gated per layer. This is prefix tuning with the prefix computed from
+the sender's state instead of learned as a constant.
+
+Why both exist: the embedding-level channel was tried first and turned out to be too weak for a
+frozen 0.6B receiver. Trained on gold targets it reached a lower LM loss than the prompt-tuning
+control, yet its accuracy with shuffled sender states (40.6%) equalled its accuracy with the
+right ones (40.6%): the gate on the sender-dependent part stayed at its 0.1 initialisation and
+the receiver never learned to read instance-specific content from soft tokens. Deep injection
+gives every attention layer direct access to the transferred state, which is also the literal
+reading of "prefill state crossing" in the write-up. Gates and gains train with a 10x learning
+rate and no weight decay so the sender-dependent part can grow.
 
 ## 2. Both models frozen
 
@@ -139,9 +151,8 @@ Records the three objects per example (sender state, slots, receiver behaviour),
 
 - Scale: 753B -> 4B is replaced by 9B -> 0.6B (and 1.7B -> 0.6B). Same shape of experiment,
   much smaller gap in absolute knowledge.
-- Per-layer KV injection: `injection.py` is the single place to add it; the bridge output
-  would become per-layer key/value tensors (`num_layers x 2 x heads x head_dim`) appended to a
-  `DynamicCache` before the prompt.
+- KV injection is implemented at the receiver's attention cache; injecting into the residual
+  stream of intermediate layers (as opposed to K/V) is not.
 - Training-time channel (distillation, specialisation, several models training together):
   the bridge already carries gradients; unfreezing the receiver in `train.py` and adding the
   teacher's slots to its training inputs is the direct extension.

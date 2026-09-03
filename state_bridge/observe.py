@@ -92,8 +92,7 @@ def run_observe(cfg: dict) -> dict:
             ro = system.receiver.model(inputs_embeds=rb.inputs_embeds, attention_mask=rb.attention_mask, output_hidden_states=True, use_cache=False)
             rm = rb.attention_mask.unsqueeze(-1).float()
             receiver_prompt_pooled.append(((ro.hidden_states[-1].float() * rm).sum(1) / rm.sum(1)).cpu())
-            rb = build_receiver_batch(system.receiver, pid, slots, slot_mask, None, system.position, pad_left=True)
-            texts = generate(system.receiver, rb, mnt)
+            texts = system.receiver_generate(batch, slots, slot_mask, mnt)
             for ex, t in zip(batch, texts):
                 p = extract_answer(t)
                 rows.append({"id": ex.id, "gold": ex.answer, "pred": p, "correct": is_correct(p, ex.answer), "n_steps": ex.n_steps, "text": t})
@@ -128,8 +127,7 @@ def run_observe(cfg: dict) -> dict:
                 batch = sub[i : i + bs]
                 slots, slot_mask = system.slots_for(batch)
                 slots = slots + a * slot_rms * direction.to(slots.device, slots.dtype)
-                rb = build_receiver_batch(system.receiver, system.receiver_prompt_ids(batch), slots, slot_mask, None, system.position, pad_left=True)
-                for ex, t in zip(batch, generate(system.receiver, rb, mnt)):
+                for ex, t in zip(batch, system.receiver_generate(batch, slots, slot_mask, mnt)):
                     p = extract_answer(t)
                     if p is not None:
                         parsed += 1; mags.append(math.log10(abs(p) + 1))

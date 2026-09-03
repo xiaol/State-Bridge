@@ -79,8 +79,7 @@ class Evaluator:
             if m.shape[0] < T:
                 m = torch.nn.functional.pad(m, (0, 0, 0, T - m.shape[0]))
             slots = m[:T].unsqueeze(0).expand(len(batch), -1, -1).to(slots.dtype)
-        rb = build_receiver_batch(sys_.receiver, sys_.receiver_prompt_ids(batch), slots, slot_mask, None, sys_.position, pad_left=True)
-        return generate(sys_.receiver, rb, max_new_tokens)
+        return sys_.receiver_generate(batch, slots, slot_mask, max_new_tokens)
 
     @torch.no_grad()
     def compute_mean_slots(self, examples: list[Example], bs: int) -> None:

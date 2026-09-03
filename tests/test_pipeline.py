@@ -71,3 +71,37 @@ def test_prompt_tuning_control_trains_without_sender(tiny_cfg):
     cfg["data"]["train_limit"] = 32
     cfg["data"]["val_size"] = 8
     assert train(cfg).exists()
+
+
+def test_kv_prefix_generation_matches_unpadded_and_trains(tiny_cfg):
+    """Deep injection: left-padded greedy decoding with a KV prefix equals the unpadded result,
+    the loss is finite, and gradients reach the bridge through the frozen receiver."""
+    import copy
+
+    from state_bridge.bridge import build_bridge
+    from state_bridge.injection import forward_with_prefix, greedy_generate_with_prefix
+
+    r = load_model(tiny_cfg["models"]["receiver"]["path"], "cpu", "float32")
+    rc = r.model.config
+    kv_dims = (rc.num_hidden_layers, rc.num_key_value_heads, rc.head_dim)
+    bcfg = dict(copy.deepcopy(tiny_cfg["bridge"]), injection="kv")
+    bridge = build_bridge(bcfg, in_dim=12, out_dim=r.hidden_size, target_rms=r.embedding_rms, kv_dims=kv_dims)
+    bridge.kv_head.calibrate(r, r.chat_prompt("2+2?"))
+    assert bridge.kv_head.calib.min() > 0
+    torch.manual_seed(0)
+    slots, mask = bridge(torch.randn(2, 5, 12), torch.ones(2, 5))
+    kv = bridge.kv_head(slots)
+    assert kv.shape == (kv_dims[0], 2, 2, kv_dims[1], slots.shape[1], kv_dims[2])
+    prompts = encode_prompts(r, [r.chat_prompt("short?"), r.chat_prompt("a considerably longer prompt with many more tokens in it?")])
+    rb = build_receiver_batch(r, prompts, None, None, None, "prefix", pad_left=True)
+    batched = greedy_generate_with_prefix(r, kv, mask, rb.inputs_embeds, rb.attention_mask, 8)
+    rb1 = build_receiver_batch(r, prompts[:1], None, None, None, "prefix", pad_left=True)
+    single = greedy_generate_with_prefix(r, kv[:, :, :1], mask[:1], rb1.inputs_embeds, rb1.attention_mask, 8)
+    assert batched[0] == single[0]
+    targets = encode_targets(r, ["4", "7"], 4)
+    rb = build_receiver_batch(r, prompts, None, None, targets, "prefix", pad_left=False)
+    out = forward_with_prefix(r, kv, mask, rb.inputs_embeds, rb.attention_mask, rb.labels)
+    assert torch.isfinite(out.loss)
+    out.loss.backward()
+    assert bridge.kv_head.proj.weight.grad is not None and bridge.kv_head.proj.weight.grad.abs().sum() > 0
+    assert bridge.in_proj.weight.grad is not None
