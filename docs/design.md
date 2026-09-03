@@ -51,7 +51,10 @@ its own prompt with those prefixes in its cache (`injection.forward_with_prefix`
 RMS-normalised and rescaled to the receiver's measured K/V statistics (`KVHead.calibrate` runs
 one real prompt through the receiver at build time), a learned constant prefix is added, and the
 sender-dependent part is gated per layer. This is prefix tuning with the prefix computed from
-the sender's state instead of learned as a constant.
+the sender's state instead of learned as a constant. The constant prefix is initialised from
+the key/value activations of a real prompt: a random prefix with realistic magnitude sent the
+receiver's loss on its own text from about 0.3 to about 3 at the start of training, an
+in-distribution one leaves it untouched (the classic prefix-tuning initialisation lesson).
 
 Why both exist: the embedding-level channel was tried first and turned out to be too weak for a
 frozen 0.6B receiver. Trained on gold targets it reached a lower LM loss than the prompt-tuning

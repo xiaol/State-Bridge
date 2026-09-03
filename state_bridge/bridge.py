@@ -183,7 +183,7 @@ class KVHead(nn.Module):
         self.register_buffer("calib", torch.ones(num_layers, 2))
         self.gain = nn.Parameter(torch.ones(num_layers, 2))
         self.gate = nn.Parameter(torch.full((num_layers, 2), float(gate_init)))
-        self.base = nn.Parameter(torch.randn(num_layers, 2, num_slots, num_kv_heads * head_dim)) if residual_base else None
+        self.base = nn.Parameter(torch.randn(num_layers, 2, num_slots, num_kv_heads * head_dim) * 0.02) if residual_base else None
 
     @staticmethod
     def _unit(x):
@@ -198,19 +198,27 @@ class KVHead(nn.Module):
         if self.base is not None:
             if K != self.K:
                 raise ValueError(f"KVHead base expects {self.K} slots, got {K}; set residual_base=false for variable-length bridges")
-            out = out + (self._unit(self.base) * (self.calib * self.gain)[:, :, None, None])[:, :, None]
+            out = out + self.base[:, :, None]  # base holds real-scale key/value activations
         return out.view(self.L, 2, B, K, self.H, self.D).transpose(3, 4)
 
     @torch.no_grad()
     def calibrate(self, receiver, text: str) -> None:
-        """Measure the receiver's per-layer key / value RMS on a real prompt."""
+        """Measure the receiver's per-layer key / value RMS on a real prompt and, when a constant
+        prefix is used, initialise it from that prompt's actual key / value activations.  A
+        random prefix with realistic magnitude is far more disruptive to a frozen model than
+        an in-distribution one (the classic prefix-tuning initialisation lesson)."""
         enc = receiver.tokenizer(text, return_tensors="pt", add_special_tokens=False).to(receiver.device)
         out = receiver.model(**enc, use_cache=True)
         cache = out.past_key_values
         for l in range(self.L):
-            k, v = layer_kv(cache, l)
+            k, v = layer_kv(cache, l)  # [1, H, T, D]
             self.calib[l, 0] = k.float().pow(2).mean().sqrt()
             self.calib[l, 1] = v.float().pow(2).mean().sqrt()
+            if self.base is not None:
+                T = k.shape[2]
+                idx = torch.arange(self.K, device=k.device) % T
+                self.base.data[l, 0] = k[0, :, idx].transpose(0, 1).reshape(self.K, -1).float()
+                self.base.data[l, 1] = v[0, :, idx].transpose(0, 1).reshape(self.K, -1).float()
 
 
 def layer_kv(cache, l: int):

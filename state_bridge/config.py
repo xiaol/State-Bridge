@@ -29,7 +29,7 @@ DEFAULTS: dict[str, Any] = {
         # embed: slots enter the receiver's input-embedding sequence (soft tokens)
         # kv:    slots are projected to key/value prefixes in every receiver layer (deep injection)
         "injection": "kv",
-        "kv_gate_init": 0.3,
+        "kv_gate_init": 0.1,
         "num_slots": 64,
         "d_model": 1024,
         "depth": 2,
