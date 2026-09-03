@@ -161,12 +161,34 @@ def load_jsonl(path: str, split: str, limit: int | None = None) -> list[Example]
 def load_examples(dcfg: dict, split: str, limit: int | None = None, seed: int = 0) -> list[Example]:
     name = dcfg["name"]
     if name == "gsm8k":
-        return load_gsm8k(split, limit, dcfg.get("path"))
-    if name == "synthetic":
-        return load_synthetic(split, limit, seed)
-    if name == "jsonl":
-        return load_jsonl(dcfg["path"], split, limit)
-    raise ValueError(f"unknown dataset {name!r}")
+        out = load_gsm8k(split, limit, dcfg.get("path"))
+    elif name == "synthetic":
+        out = load_synthetic(split, limit, seed)
+    elif name == "jsonl":
+        out = load_jsonl(dcfg["path"], split, limit)
+    else:
+        raise ValueError(f"unknown dataset {name!r}")
+    if split == "train" and dcfg.get("targets"):
+        apply_targets(out, dcfg["targets"])
+    return out
+
+
+def apply_targets(examples: list[Example], path: str) -> None:
+    """Replace gold solutions with model-written targets (see precompute.build_targets)."""
+    targets = {}
+    with open(path) as f:
+        for line in f:
+            if line.strip():
+                r = json.loads(line)
+                targets[r["id"]] = r
+    n = 0
+    for ex in examples:
+        t = targets.get(ex.id)
+        if t:
+            ex.solution = t["solution"]
+            ex.extra["target_source"] = t.get("source")
+            n += 1
+    print(f"applied {n}/{len(examples)} model-written targets from {path}")
 
 
 def load_sender_generations(path: str | None) -> dict[str, str]:

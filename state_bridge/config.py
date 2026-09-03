@@ -48,6 +48,9 @@ DEFAULTS: dict[str, Any] = {
         "eval_split": "test",
         "val_size": 200,
         "max_target_tokens": 256,
+        # Optional JSONL of training targets written by the models themselves (see
+        # precompute.build_targets); avoids the style shift of training on terse gold rationales.
+        "targets": None,
         # Optional JSONL of sender-generated solutions on the training split
         # (from `precompute`).  When set, training randomly hands off after
         # 0..handoff_max sender tokens so the bridge learns to read partial
@@ -102,10 +105,17 @@ def _deep_update(base: dict, upd: dict) -> dict:
 
 
 def _parse_scalar(s: str) -> Any:
+    """YAML-style scalar parsing, plus plain floats like ``3e-4`` that YAML 1.1 treats as strings."""
     try:
-        return yaml.safe_load(s)
+        v = yaml.safe_load(s)
     except yaml.YAMLError:
         return s
+    if isinstance(v, str):
+        try:
+            return float(v)
+        except ValueError:
+            return v
+    return v
 
 
 def load_config(path: str | Path | None, overrides: list[str] | None = None) -> dict:

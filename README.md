@@ -65,8 +65,11 @@ or step by step:
 
 ```bash
 CFG=configs/qwen3p5_9b_to_qwen3_0p6b.yaml
-python -m state_bridge train    -c $CFG                                   # bridge, both models frozen
-python -m state_bridge train    -c $CFG run_name=ctrl bridge.type=prompt_tuning   # control
+python -m state_bridge precompute -c $CFG --role receiver                # receiver writes train solutions
+python -m state_bridge precompute -c $CFG --role sender --subset wrong    # sender writes where receiver failed
+python -m state_bridge targets    -c $CFG                                 # -> runs/<run>/targets_train.jsonl
+python -m state_bridge train    -c $CFG data.targets=runs/<run>/targets_train.jsonl            # bridge
+python -m state_bridge train    -c $CFG data.targets=runs/<run>/targets_train.jsonl run_name=ctrl bridge.type=prompt_tuning
 python -m state_bridge eval     -c $CFG --modes receiver,sender,bridged,bridged_shuffled,bridged_ablated
 python -m state_bridge eval     -c $CFG run_name=ctrl --modes bridged
 python -m state_bridge handoff  -c $CFG                                   # text vs latent hand-off sweep
@@ -104,11 +107,13 @@ frozen receiver than sender-dependent slots from scratch (see `docs/results.md`)
 (`bridge.position: prefix` before the prompt, or `suffix` between prompt and answer). The
 receiver attends to them like tokens it cannot read. Generation uses `generate(inputs_embeds=…)`.
 
-**Training.** Cross-entropy of the frozen receiver on the gold solution, answer tokens only.
+**Training.** Cross-entropy of the frozen receiver on a target solution, answer tokens only.
 Gradients flow through the frozen receiver into the slots and the bridge. AdamW, cosine
-schedule, bf16 autocast. Optionally the sender's own solutions are precomputed
-(`python -m state_bridge precompute`) so training also hands off after a random number of
-sender-written tokens.
+schedule, bf16 autocast. Targets are built by the models themselves (`precompute` for each
+role, then `targets`): the receiver's own correct solutions, the sender's solutions where the
+receiver fails, gold as a fallback. Training on the terse gold rationales alone shifts the
+receiver's style and costs it ~25 points of accuracy, which would swamp any channel effect
+(see `docs/design.md`, section 3).
 
 **Evaluation modes.** `receiver` (alone), `sender` (alone), `bridged`, `bridged_shuffled`
 (slots from a different problem), `bridged_ablated` (slots replaced by their mean). The

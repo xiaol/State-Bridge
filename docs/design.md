@@ -58,10 +58,22 @@ which is what lets the bridge learn what the receiver can use.
 
 ## 3. Training objective
 
-Next-token cross-entropy of the frozen receiver on the gold GSM8K solution (calculator
-annotations removed, final line rewritten as `The final answer is \boxed{N}.`), conditioned on
+Next-token cross-entropy of the frozen receiver on a target solution, conditioned on
 `[slots] + [receiver chat prompt]`. Only answer tokens are scored. AdamW, cosine schedule with
 warm-up, gradient clipping, bf16 autocast for the receiver, fp32 bridge.
+
+**Which targets.** The obvious choice, the gold GSM8K rationales (calculator annotations removed,
+final line rewritten as `The final answer is \boxed{N}.`), turned out to be a trap: they are
+terse, and a soft prompt trained on them pulls the receiver away from its own chain-of-thought
+style. The prompt-tuning control trained on gold reached a *lower* LM loss than any bridge yet
+scored 36% on GSM8K against 62% for the untouched receiver. Any "gap closed" computed against
+receiver-alone would then be dominated by style, not information.
+
+The default pipeline therefore builds targets from the models themselves
+(`precompute` + `targets`): the receiver's own solution where it is correct (no style shift),
+the sender's solution where the receiver is wrong and the sender is right (the large model's
+knowledge, written out once at training time), and gold otherwise. With these targets the
+prompt-tuning control should sit near receiver-alone, and anything above it is the channel.
 
 Optionally (`data.sender_generations`), the sender's own solutions are precomputed and, with
 probability `handoff_prob`, training hands off after a random number of sender-written tokens.

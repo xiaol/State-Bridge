@@ -189,5 +189,8 @@ def load_bridge(path, map_location="cpu") -> tuple[BridgeBase, dict]:
     ckpt = torch.load(path, map_location=map_location, weights_only=False)
     cfg = ckpt["cfg"]
     bridge = build_bridge(cfg["bridge"], ckpt["in_dim"], ckpt["out_dim"], target_rms=1.0)
-    bridge.load_state_dict(ckpt["state_dict"])
+    missing, unexpected = bridge.load_state_dict(ckpt["state_dict"], strict=False)
+    # checkpoints written before the gate existed behave as gate == 1, which is its default init here
+    if unexpected or set(missing) - {"gate"}:
+        raise RuntimeError(f"checkpoint mismatch: missing {missing}, unexpected {unexpected}")
     return bridge, cfg

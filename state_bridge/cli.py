@@ -11,11 +11,13 @@ from .config import load_config
 
 def main(argv: list[str] | None = None) -> None:
     p = argparse.ArgumentParser(prog="state-bridge", description=__doc__)
-    p.add_argument("command", choices=["train", "eval", "handoff", "geometry", "observe", "compute", "precompute", "summarize"])
+    p.add_argument("command", choices=["train", "eval", "handoff", "geometry", "observe", "compute", "precompute", "targets", "summarize"])
     p.add_argument("--config", "-c", default=None, help="YAML config (defaults are used when omitted)")
     p.add_argument("--modes", default=None, help="comma-separated eval modes, overrides eval.modes (e.g. receiver,bridged)")
     p.add_argument("--shard", default="0/1", help="precompute: i/n")
     p.add_argument("--device", default=None, help="precompute: device override")
+    p.add_argument("--role", default="sender", choices=["sender", "receiver"], help="precompute: which model writes")
+    p.add_argument("--subset", default=None, help="precompute: 'wrong' = only problems the receiver got wrong")
     p.add_argument("overrides", nargs="*", help="dotted overrides, e.g. train.lr=1e-4")
     a = p.parse_intermixed_args(argv)  # lets key=value overrides appear before or after flags
     cfg = load_config(a.config, a.overrides)
@@ -44,7 +46,10 @@ def main(argv: list[str] | None = None) -> None:
         run_observe(cfg)
     elif a.command == "precompute":
         from .precompute import run_precompute
-        run_precompute(cfg, a.shard, a.device)
+        run_precompute(cfg, a.role, a.shard, a.device, subset=a.subset)
+    elif a.command == "targets":
+        from .precompute import build_targets
+        build_targets(cfg)
     elif a.command == "compute":
         import json
         from .compute import ModelCost, report
