@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "state-bridge"
+version = "0.1.0"
+description = "Latent hand-off between frozen language models: a trained bridge carries a sender's hidden states into a receiver's representation space."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+  "torch>=2.1",
+  "transformers>=4.45",
+  "datasets>=2.19",
+  "numpy",
+  "pyyaml",
+]
+
+[project.optional-dependencies]
+plots = ["matplotlib"]
+test = ["pytest"]
+
+[project.scripts]
+state-bridge = "state_bridge.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["state_bridge*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

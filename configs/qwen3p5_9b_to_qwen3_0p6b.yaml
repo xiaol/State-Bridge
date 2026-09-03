@@ -1,0 +1,16 @@
+# Cross-generation pair with different tokenizers (vocab 248k vs 152k): Qwen3.5-9B reads,
+# Qwen3-0.6B writes.  Sender is a hybrid linear/full-attention model; its prefill is what
+# crosses the bridge.  Paths point at local copies; replace with hub ids if you have access.
+run_name: qwen3p5_9b_to_qwen3_0p6b
+models:
+  sender: {path: /root/x/Qwen3.5-9B, device: "cuda:1", dtype: bfloat16}
+  receiver: {path: /root/x/models/Qwen3-0.6B, device: "cuda:0", dtype: bfloat16}
+  sender_layers: [-8, -4]
+  max_prompt_tokens: 512
+bridge: {type: resampler, num_slots: 64, d_model: 1024, depth: 2, heads: 8, position: prefix}
+data: {name: gsm8k, path: runs/data/gsm8k, val_size: 200, max_target_tokens: 256}
+train: {epochs: 2, batch_size: 16, lr: 2.0e-4, warmup_steps: 50, log_every: 20, eval_every: 200}
+eval: {batch_size: 48, max_new_tokens: 384, sender_max_new_tokens: 512, modes: [receiver, bridged, bridged_shuffled, bridged_ablated, sender]}
+handoff: {ks: [0, 16, 32, 64, 128, 256], limit: 300, batch_size: 24}
+geometry: {num_texts: 256, layer_stride: 4}
+observe: {limit: 500}
