@@ -73,6 +73,29 @@ def main():
                 c = (b["buckets"][bk]["acc"] - r["buckets"][bk]["acc"]) / g if abs(g) > 1e-9 else float("nan")
                 parts.append(f"{bk.split(' ')[0]}: closed {c*100:.0f}%, x{b['buckets'][bk]['acc']/max(r['buckets'][bk]['acc'],1e-9):.2f}")
             lines.append(f"- {run.name}: " + "; ".join(parts))
+    # ---- where does the channel act?  slice by what receiver-alone and sender-alone got right
+    def rows(p: Path):
+        return {json.loads(l)["id"]: json.loads(l) for l in open(p)} if p.exists() else None
+
+    rr, sr = rows(base / "eval_receiver.jsonl"), rows(base / "eval_sender.jsonl")
+    if rr and sr:
+        ids = [i for i in rr if i in sr]
+        gap_set = [i for i in ids if not rr[i]["correct"] and sr[i]["correct"]]
+        keep_set = [i for i in ids if rr[i]["correct"]]
+        lines += ["", f"Subsets: gap set = receiver wrong & sender right (n={len(gap_set)}); receiver-right set (n={len(keep_set)}).",
+                  "", "| system | acc on gap set | acc on receiver-right set | answers = sender's | answers = receiver's |", "|---|---|---|---|---|"]
+        for run in a.runs:
+            run = Path(run)
+            for mode in ("bridged", "bridged_shuffled", "bridged_ablated"):
+                br = rows(run / f"eval_{mode}.jsonl")
+                if not br:
+                    continue
+                g = sum(br[i]["correct"] for i in gap_set if i in br) / max(1, len(gap_set))
+                k = sum(br[i]["correct"] for i in keep_set if i in br) / max(1, len(keep_set))
+                same_s = sum(br[i]["pred"] == sr[i]["pred"] for i in ids if i in br) / len(ids)
+                same_r = sum(br[i]["pred"] == rr[i]["pred"] for i in ids if i in br) / len(ids)
+                lines.append(f"| {run.name} / {mode} | {g:.3f} | {k:.3f} | {same_s:.3f} | {same_r:.3f} |")
+        lines.append(f"| receiver alone | 0.000 | 1.000 | {sum(rr[i]['pred'] == sr[i]['pred'] for i in ids) / len(ids):.3f} | 1.000 |")
     text = "\n".join(lines) + "\n"
     print(text)
     if a.out:

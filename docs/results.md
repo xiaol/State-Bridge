@@ -45,7 +45,82 @@ Two lessons, both of which changed the design:
 
 ## Phase 2: model-written targets, deep (key/value) injection
 
-_(filled in from `runs/qwen3p5_9b_to_qwen3_0p6b_kv/` when the run completes)_
+Targets: 5014 receiver-written (its own correct solutions), 1553 sender-written (where the
+receiver failed and the sender succeeded), 906 gold. Bridge: resampler, 64 slots, projected to
+key/value prefixes in all 28 receiver layers (`bridge.injection: kv`), constant prefix
+initialised from real activations, sender part gated; 2 epochs (910 steps, batch 16), about
+25 minutes on two A100s. Hand-off-aware: half the examples with a sender-written solution hand
+off after 1-256 sender tokens during training. Control: the same key/value prefix machinery with
+constant slots and no sender (prefix tuning). Ablation: the same targets with soft-token
+injection (`bridge.injection: embed`).
+
+| system | trainable params | val loss | accuracy | easy | medium | hard | shuffled sender | mean slots |
+|---|---|---|---|---|---|---|---|---|
+| receiver alone | 0 | | 0.623 | 0.753 | 0.508 | 0.380 | | |
+| prefix-tuning control (kv, no sender) | 59M | 0.213 | 0.604 | 0.733 | 0.492 | 0.360 | | |
+| **bridge, kv injection** | 102M | 0.214 | **0.632** | 0.769 | 0.515 | 0.360 | 0.629 | 0.641 |
+| bridge, soft-token injection | 43M | 0.275 | 0.612 | 0.729 | 0.517 | 0.367 | 0.609 | |
+| sender alone | 0 | | 0.842 | 0.923 | 0.814 | 0.560 | | |
+
+Where the channel would have to act (`scripts/compare_runs.py`): the *gap set* is the 340 test
+problems the receiver gets wrong and the sender gets right; the *receiver-right set* is the 822
+the receiver already solves.
+
+| system | acc on gap set (n=340) | acc on receiver-right set (n=822) | answer equals sender's | answer equals receiver's |
+|---|---|---|---|---|
+| bridge, kv | 0.312 | 0.860 | 0.602 | 0.623 |
+| bridge, kv, shuffled sender | 0.312 | 0.860 | 0.600 | 0.628 |
+| bridge, kv, mean slots | 0.329 | 0.871 | 0.612 | 0.633 |
+| prefix-tuning control | 0.247 | 0.848 | 0.575 | 0.627 |
+| bridge, soft-token | 0.306 | 0.836 | 0.592 | 0.617 |
+| bridge, soft-token, shuffled sender | 0.253 | 0.848 | 0.578 | 0.625 |
+| receiver alone | 0.000 | 1.000 | 0.597 | 1.000 |
+
+**Reading.** With model-written targets the receiver keeps its native style (252 tokens per
+answer) and its accuracy, and the deep bridge edges the receiver by 0.9 points (4% of the gap,
++1.3% relative). But the controls take that away: the same bridge fed the *wrong* problem's
+sender state scores 0.629, and fed the dataset-mean slots scores 0.641, higher than with the
+real state. On the gap set the kv bridge and its shuffled control are identical (0.312). The
+soft-token bridge is the only place with a hint of transfer: 0.306 vs 0.253 on the gap set
+against its shuffled control (about 18 problems, roughly two standard errors), invisible in the
+overall score. Answer agreement with the sender does not move (0.60 for every variant, 0.597
+for the receiver alone).
+
+So at this scale the headline claim does not reproduce: **no measurable information crosses the
+channel in the read-only (k = 0) setting.** What the bridge does do is harmless: unlike the gold
+targets of phase 1, it leaves the receiver's competence intact, and the prefix-tuning control
+shows that even the constant prefix costs 2 points.
+
+Plausible reasons, in the order we would test them next:
+
+1. **What a 9B prefill holds about a GSM8K problem is mostly what the 0.6B already has.** The
+   answer needs multi-step computation that happens during generation, not while reading. The
+   write-up's sender is 753B and cites evidence that larger models hold more that the text never
+   shows; the effect may simply need the gap to be in knowledge rather than in arithmetic. The
+   hand-off sweep below (sender reasons for k tokens first) is the direct test.
+2. **The objective gives the bridge little to explain.** 68% of targets are the receiver's own
+   text, which it already predicts at 0.2 nats/token; the bridge's validation loss ends within
+   0.001 of the control's. Targets written entirely by the sender (distillation), or a loss
+   focused on the final-answer tokens, would put pressure on the channel.
+3. **Budget.** 910 steps of a 100M-parameter bridge through a frozen receiver is small; the
+   write-up does not state its budget.
+
+## Compute
+
+FLOPs per GSM8K example for this pair (prompt about 160 tokens, 160 generated, 64 slots), from
+`compute.py`. Non-embedding parameters: sender 8.2B, receiver 0.44B.
+
+| scenario | GFLOPs / example | vs receiver alone |
+|---|---|---|
+| receiver alone | 288 | x1.00 |
+| sender alone | 4,455 | x15.5 |
+| bridged (sender prefill only + receiver) | 2,568 | x8.9 |
+| text hand-off (k = 0) | 2,509 | x8.7 |
+
+The economics the write-up describes hold by construction: the bridged pair costs 1.7x less
+than running the sender, because the sender only reads. The "2.5x cheaper than an equivalent
+mid-sized model" claim needs a bridged accuracy well above the receiver's to be meaningful; with
+a 0.9-point gain the interpolated equivalent model is barely larger than the receiver itself.
 
 ## Geometry
 
@@ -101,7 +176,3 @@ _(from `runs/qwen3p5_9b_to_qwen3_0p6b_kv/handoff.md`)_
 ## Observability
 
 _(from `runs/qwen3p5_9b_to_qwen3_0p6b_kv/observe.md`)_
-
-## Compute
-
-_(from `runs/qwen3p5_9b_to_qwen3_0p6b_kv/compute.md`)_
