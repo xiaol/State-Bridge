@@ -74,19 +74,28 @@ class Evaluator:
         if variant == "shuffled" and len(batch) > 1:
             slots, slot_mask = slots.roll(1, dims=0), slot_mask.roll(1, dims=0)
         elif variant == "ablated":
-            slots = self.mean_slots.unsqueeze(0).expand(len(batch), -1, -1)[:, : slots.shape[1]]
-            slot_mask = torch.ones_like(slot_mask)
+            T = slots.shape[1]
+            m = self.mean_slots
+            if m.shape[0] < T:
+                m = torch.nn.functional.pad(m, (0, 0, 0, T - m.shape[0]))
+            slots = m[:T].unsqueeze(0).expand(len(batch), -1, -1).to(slots.dtype)
         rb = build_receiver_batch(sys_.receiver, sys_.receiver_prompt_ids(batch), slots, slot_mask, None, sys_.position, pad_left=True)
         return generate(sys_.receiver, rb, max_new_tokens)
 
     @torch.no_grad()
     def compute_mean_slots(self, examples: list[Example], bs: int) -> None:
-        acc, n = None, 0
+        """Per-position mean slot over the eval set (positions beyond a bridge's length are padded)."""
+        acc, n = None, None
         for i in range(0, len(examples), bs):
             slots, mask = self.system.slots_for(examples[i : i + bs])
             s = (slots * mask.unsqueeze(-1)).sum(0)
-            acc = s if acc is None else acc + s
-            n += mask.sum(0).unsqueeze(-1)
+            c = mask.sum(0).unsqueeze(-1).to(s.dtype)
+            if acc is None:
+                acc, n = s, c
+            else:
+                L = max(acc.shape[0], s.shape[0])
+                acc = torch.nn.functional.pad(acc, (0, 0, 0, L - acc.shape[0])) + torch.nn.functional.pad(s, (0, 0, 0, L - s.shape[0]))
+                n = torch.nn.functional.pad(n, (0, 0, 0, L - n.shape[0])) + torch.nn.functional.pad(c, (0, 0, 0, L - c.shape[0]))
         self.mean_slots = acc / n.clamp(min=1)
 
     def run(self, mode: str, examples: list[Example], out_path: Path) -> dict:

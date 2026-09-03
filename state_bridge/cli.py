@@ -17,7 +17,7 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--shard", default="0/1", help="precompute: i/n")
     p.add_argument("--device", default=None, help="precompute: device override")
     p.add_argument("overrides", nargs="*", help="dotted overrides, e.g. train.lr=1e-4")
-    a = p.parse_args(argv)
+    a = p.parse_intermixed_args(argv)  # lets key=value overrides appear before or after flags
     cfg = load_config(a.config, a.overrides)
     if cfg.get("hf_endpoint"):
         os.environ.setdefault("HF_ENDPOINT", cfg["hf_endpoint"])

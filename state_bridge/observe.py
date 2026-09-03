@@ -85,7 +85,7 @@ def run_observe(cfg: dict) -> dict:
             slots, slot_mask = system.slots_for(batch, sender_hidden=hidden, sender_mask=mask)
             sm = slot_mask.unsqueeze(-1).float()
             slots_pooled.append(((slots.float() * sm).sum(1) / sm.sum(1)).cpu())
-            slots_all.append(slots.float().cpu())
+            slots_all.append((slots.float().pow(2).sum().item(), slots.numel()))
             # the receiver's own reading of the prompt (last layer, mean pooled) as a reference
             pid = system.receiver_prompt_ids(batch)
             rb = build_receiver_batch(system.receiver, pid, None, None, None, system.position, pad_left=False)
@@ -117,7 +117,7 @@ def run_observe(cfg: dict) -> dict:
     # ---- 3. intervene on the channel: steer along the answer-magnitude direction
     w, xm, ym = ridge_fit(Z, gold_mag, alpha=10.0)
     direction = torch.tensor(w / (np.linalg.norm(w) + 1e-9), dtype=torch.float32)
-    slot_rms = float(torch.cat(slots_all).pow(2).mean().sqrt())
+    slot_rms = math.sqrt(sum(a for a, _ in slots_all) / max(1, sum(b for _, b in slots_all)))
     steer = {"alphas": ocfg["steer_alphas"], "mean_pred_log_magnitude": [], "accuracy": [], "parse_rate": []}
     n_sub = min(len(examples), max(64, ocfg["limit"] // 2))
     sub = examples[:n_sub]

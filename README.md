@@ -93,8 +93,12 @@ and concatenates them. The sender never decodes in the basic setting.
 positions, then `num_slots` learned queries pass through `depth` blocks of cross-attention over
 sender tokens, self-attention, and an MLP; output projected to the receiver's hidden size and
 rescaled so that at initialisation the slots have the RMS of the receiver's token embeddings.
-`PerTokenBridge` maps every sender token to one slot with an MLP. `PromptTuningBridge` is the
-control: same slots, learned constants, sender ignored.
+`PerTokenBridge` maps every sender token to one slot with an MLP. Both use a *gated residual*
+parametrisation: `slots = learned_constants + gate * f(sender)` with the gate initialised small
+(`bridge.gate_init`, `residual_base`, `num_prefix`). The system therefore starts as plain
+prompt tuning and learns sender-dependent deviations on top, which trains far better through a
+frozen receiver than sender-dependent slots from scratch (see `docs/results.md`).
+`PromptTuningBridge` is the control: same slots, learned constants, sender ignored.
 
 **Receiver side.** Slots are inserted into the receiver's input-embedding sequence
 (`bridge.position: prefix` before the prompt, or `suffix` between prompt and answer). The

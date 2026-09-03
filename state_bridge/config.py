@@ -31,6 +31,11 @@ DEFAULTS: dict[str, Any] = {
         "depth": 2,
         "heads": 8,
         "dropout": 0.0,
+        # Gated residual parametrisation: learned constant slots (prompt-tuning component) plus a
+        # sender-dependent term scaled by a per-dim gate initialised at gate_init.
+        "residual_base": True,   # resampler: add a learned constant per slot
+        "num_prefix": 0,         # any bridge: prepend this many learned constant slots
+        "gate_init": 0.1,
         # Where the slots enter the receiver's sequence: before the prompt (prefix)
         # or between the prompt and the answer (suffix).
         "position": "prefix",

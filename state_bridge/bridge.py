@@ -46,13 +46,30 @@ class OutputScale(nn.Module):
 
 
 class BridgeBase(nn.Module):
+    """Shared machinery: an optional learned constant prefix (a prompt-tuning component) and a
+    per-dimension gate on the sender-dependent slots.  With ``gate_init`` small the system
+    starts out as plain prompt tuning and learns to add sender-dependent deviations on top,
+    which is much easier to optimise through a frozen receiver than sender-dependent slots
+    from scratch."""
+
     kind = "base"
     uses_sender = True
 
-    def __init__(self, in_dim: int, out_dim: int):
+    def __init__(self, in_dim: int, out_dim: int, num_prefix: int = 0, gate_init: float = 1.0, target_rms: float = 1.0):
         super().__init__()
         self.in_dim = in_dim
         self.out_dim = out_dim
+        self.num_prefix = num_prefix
+        self.prefix = nn.Parameter(torch.randn(num_prefix, out_dim) * target_rms) if num_prefix > 0 else None
+        self.gate = nn.Parameter(torch.full((out_dim,), float(gate_init)))
+
+    def finalize(self, slots: torch.Tensor, slot_mask: torch.Tensor):
+        slots = slots * self.gate
+        if self.prefix is not None:
+            B = slots.shape[0]
+            slots = torch.cat([self.prefix.unsqueeze(0).expand(B, -1, -1).to(slots.dtype), slots], 1)
+            slot_mask = torch.cat([torch.ones(B, self.num_prefix, dtype=torch.bool, device=slots.device), slot_mask.bool()], 1)
+        return slots, slot_mask
 
     def forward(self, sender_hidden: torch.Tensor, sender_mask: torch.Tensor):  # pragma: no cover
         raise NotImplementedError
@@ -83,10 +100,13 @@ class CrossAttnBlock(nn.Module):
 class ResamplerBridge(BridgeBase):
     kind = "resampler"
 
-    def __init__(self, in_dim, out_dim, num_slots=64, d_model=1024, depth=2, heads=8, dropout=0.0, target_rms=1.0, max_len=4096):
-        super().__init__(in_dim, out_dim)
-        self.num_slots = num_slots
+    def __init__(self, in_dim, out_dim, num_slots=64, d_model=1024, depth=2, heads=8, dropout=0.0, target_rms=1.0, max_len=4096,
+                 residual_base=False, num_prefix=0, gate_init=1.0):
+        super().__init__(in_dim, out_dim, num_prefix=num_prefix, gate_init=gate_init, target_rms=target_rms)
+        self.num_slots = num_slots + num_prefix
         self.d_model = d_model
+        # learned constant per slot; the sender-dependent part is added on top
+        self.base = nn.Parameter(torch.randn(num_slots, out_dim) * target_rms) if residual_base else None
         self.in_norm = nn.LayerNorm(in_dim)
         self.in_proj = nn.Linear(in_dim, d_model)
         self.queries = nn.Parameter(torch.randn(num_slots, d_model) * 0.02)
@@ -103,15 +123,21 @@ class ResamplerBridge(BridgeBase):
         q = self.queries.unsqueeze(0).expand(B, -1, -1)
         for blk in self.blocks:
             q = blk(q, x, kpm)
-        slots = self.out_scale(self.out_proj(q))
-        return slots, torch.ones(B, self.num_slots, dtype=torch.bool, device=slots.device)
+        slots = self.out_scale(self.out_proj(q)) * self.gate
+        if self.base is not None:
+            slots = slots + self.base.unsqueeze(0)
+        mask = torch.ones(B, slots.shape[1], dtype=torch.bool, device=slots.device)
+        if self.prefix is not None:
+            slots = torch.cat([self.prefix.unsqueeze(0).expand(B, -1, -1), slots], 1)
+            mask = torch.ones(B, slots.shape[1], dtype=torch.bool, device=slots.device)
+        return slots, mask
 
 
 class PerTokenBridge(BridgeBase):
     kind = "per_token"
 
-    def __init__(self, in_dim, out_dim, d_model=1024, target_rms=1.0, dropout=0.0, **_):
-        super().__init__(in_dim, out_dim)
+    def __init__(self, in_dim, out_dim, d_model=1024, target_rms=1.0, dropout=0.0, num_prefix=0, gate_init=1.0, **_):
+        super().__init__(in_dim, out_dim, num_prefix=num_prefix, gate_init=gate_init, target_rms=target_rms)
         self.net = nn.Sequential(
             nn.LayerNorm(in_dim), nn.Linear(in_dim, d_model), nn.GELU(), nn.Dropout(dropout), nn.Linear(d_model, out_dim)
         )
@@ -119,7 +145,7 @@ class PerTokenBridge(BridgeBase):
 
     def forward(self, sender_hidden, sender_mask):
         slots = self.out_scale(self.net(sender_hidden.float()))
-        return slots, sender_mask.bool()
+        return self.finalize(slots, sender_mask.bool())
 
 
 class PromptTuningBridge(BridgeBase):
@@ -142,12 +168,14 @@ class PromptTuningBridge(BridgeBase):
 def build_bridge(bcfg: dict, in_dim: int, out_dim: int, target_rms: float) -> BridgeBase:
     kind = bcfg["type"]
     common = dict(in_dim=in_dim, out_dim=out_dim, target_rms=target_rms)
+    extra = dict(num_prefix=bcfg.get("num_prefix", 0), gate_init=bcfg.get("gate_init", 1.0))
     if kind == "resampler":
         return ResamplerBridge(
-            num_slots=bcfg["num_slots"], d_model=bcfg["d_model"], depth=bcfg["depth"], heads=bcfg["heads"], dropout=bcfg["dropout"], **common
+            num_slots=bcfg["num_slots"], d_model=bcfg["d_model"], depth=bcfg["depth"], heads=bcfg["heads"], dropout=bcfg["dropout"],
+            residual_base=bcfg.get("residual_base", False), **extra, **common
         )
     if kind == "per_token":
-        return PerTokenBridge(d_model=bcfg["d_model"], dropout=bcfg["dropout"], **common)
+        return PerTokenBridge(d_model=bcfg["d_model"], dropout=bcfg["dropout"], **extra, **common)
     if kind == "prompt_tuning":
         return PromptTuningBridge(num_slots=bcfg["num_slots"], **common)
     raise ValueError(f"unknown bridge type {kind!r}")

@@ -29,6 +29,14 @@ receiver works with them directly; no text passes; neither model's weights chang
   in-distribution during the first steps. About 43M parameters for a 4096 -> 1024 pair.
 - `bridge.PerTokenBridge`: one slot per sender token through an MLP, no compression. Useful
   when the receiver can afford a longer context.
+- Gated residual parametrisation (both bridges): `slots = C + g * f(sender)`, where `C` are
+  learned constant slots (`residual_base` for the resampler, `num_prefix` constant slots for
+  any bridge) and `g` is a per-dimension gate initialised at `gate_init` (0.1). A first run
+  without this (sender-dependent slots from scratch, gate 1.0) trained much more slowly than
+  the prompt-tuning control and never caught up within two epochs: the frozen receiver is
+  disturbed by slots it cannot yet interpret, and the gradient signal through it is weak.
+  Starting from the prompt-tuning solution removes that obstacle; the sender-dependent term
+  only has to explain what the constants cannot.
 - `injection.build_receiver_batch` places the slots in the receiver's *input embedding*
   sequence, either before the prompt (`prefix`, default) or between prompt and answer
   (`suffix`). The receiver then sees a sequence of embeddings it cannot read but can attend
