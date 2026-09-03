@@ -168,8 +168,6 @@ def load_examples(dcfg: dict, split: str, limit: int | None = None, seed: int = 
         out = load_jsonl(dcfg["path"], split, limit)
     else:
         raise ValueError(f"unknown dataset {name!r}")
-    if split == "train" and dcfg.get("targets"):
-        apply_targets(out, dcfg["targets"])
     return out
 
 

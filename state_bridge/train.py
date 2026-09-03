@@ -18,7 +18,7 @@ import torch
 
 from .bridge import build_bridge, save_bridge
 from .config import dump_config, run_dir
-from .data import Example, load_examples, load_sender_generations
+from .data import Example, apply_targets, load_examples, load_sender_generations
 from .injection import build_receiver_batch, encode_prompts, encode_targets, forward_with_prefix, generate, greedy_generate_with_prefix
 from .models import LoadedModel, SenderEncoder, load_model
 
@@ -125,6 +125,8 @@ def train(cfg: dict) -> Path:
     print(f"bridge {bridge.kind}: {bridge.num_trainable()/1e6:.2f}M trainable params")
 
     examples = load_examples(dcfg, "train", dcfg["train_limit"], cfg["seed"])
+    if dcfg.get("targets"):
+        apply_targets(examples, dcfg["targets"])  # model-written targets (see precompute.build_targets)
     rng = random.Random(cfg["seed"])
     rng.shuffle(examples)
     val = examples[: dcfg["val_size"]]
