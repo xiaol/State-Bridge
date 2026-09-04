@@ -240,8 +240,16 @@ prefix so it answers without a reasoning block.
 Gap to close: 31.2 points overall (28.6 easy, 37.3 medium, 24.7 hard), wider than for the
 Qwen3-0.6B receiver.
 
-_(bridge, state-tuning control, controls, hand-off sweep and probes: filled in from
-`runs/qwen3p5_9b_to_rwkv7_1p5b/` when phase B completes)_
+Training targets, built the same way as for the transformer receiver: 4479 receiver-written
+(its own correct solutions), 2075 sender-written (where the receiver failed and the sender
+succeeded; the sender solves 87% of the problems the RNN gets wrong), 919 gold. Bridge:
+resampler, 64 slots, `StateHead` into all 24 layers (`H=32`, `N=64` state per layer), constant
+state initialised from a real prompt's state, sender part gated; 2 epochs (910 steps, batch 16),
+32 minutes on one A100 for sender + receiver together (fused WKV-7 kernel). Validation loss
+0.2148 after training. Control: the same constant-state machinery with no sender (state tuning).
+
+_(bridged evaluation with controls, hand-off sweep and probes: filled in from
+`runs/qwen3p5_9b_to_rwkv7_1p5b/` when phase C completes)_
 
 ## Summary against the write-up's claims
 
