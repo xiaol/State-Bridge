@@ -225,6 +225,24 @@ latent hand-off is a place to record, probe and intervene, works as a *method*: 
 one table that the channel is empty. The part of the proposal that needs a channel carrying
 information could not be exercised.
 
+## Cross-architecture pair: Qwen3.5-9B -> RWKV-7 G1 1.5B (RNN receiver)
+
+Config `configs/qwen3p5_9b_to_rwkv7_1p5b.yaml`, `bridge.injection: state`: the sender's prefill
+state is written into the RNN's initial recurrent state (design.md, section 1b). Same sender,
+same GSM8K test prompts; the receiver uses the World chat format with a `<think>\n</think>`
+prefix so it answers without a reasoning block.
+
+| system | accuracy | easy | medium | hard | tokens per answer |
+|---|---|---|---|---|---|
+| receiver alone (RWKV-7 G1j 1.5B) | **0.530** | 0.637 | 0.441 | 0.313 | 184 |
+| sender alone (Qwen3.5-9B) | **0.842** | 0.923 | 0.814 | 0.560 | 371 |
+
+Gap to close: 31.2 points overall (28.6 easy, 37.3 medium, 24.7 hard), wider than for the
+Qwen3-0.6B receiver.
+
+_(bridge, state-tuning control, controls, hand-off sweep and probes: filled in from
+`runs/qwen3p5_9b_to_rwkv7_1p5b/` when phase B completes)_
+
 ## Summary against the write-up's claims
 
 | claim | outcome here (9B -> 0.6B, ~1 GPU-hour bridge) |
