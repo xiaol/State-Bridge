@@ -246,10 +246,22 @@ succeeded; the sender solves 87% of the problems the RNN gets wrong), 919 gold. 
 resampler, 64 slots, `StateHead` into all 24 layers (`H=32`, `N=64` state per layer), constant
 state initialised from a real prompt's state, sender part gated; 2 epochs (910 steps, batch 16),
 32 minutes on one A100 for sender + receiver together (fused WKV-7 kernel). Validation loss
-0.2148 after training. Control: the same constant-state machinery with no sender (state tuning).
+0.2148 after training. Control: the same constant-state machinery with no sender (state tuning),
+validation loss 0.2150.
 
-_(bridged evaluation with controls, hand-off sweep and probes: filled in from
-`runs/qwen3p5_9b_to_rwkv7_1p5b/` when phase C completes)_
+| system | trainable params | val loss | accuracy | easy | medium | hard | tokens per answer |
+|---|---|---|---|---|---|---|---|
+| receiver alone | 0 | | 0.530 | 0.637 | 0.441 | 0.313 | 184 |
+| state-tuning control (constant initial state, no sender) | 3.4M | 0.2150 | 0.549 | 0.650 | 0.468 | 0.333 | 230 |
+| **bridge, state injection** | 100M | 0.2148 | _(phase C)_ | | | | |
+| sender alone | 0 | | 0.842 | 0.923 | 0.814 | 0.560 | 371 |
+
+Unlike the transformer receiver, whose prefix-tuning control *lost* 2 points, the RNN's
+constant learned initial state *gains* 1.9 points over the untouched model (state tuning is a
+known effective adapter for RWKV). The bridge has to beat 0.549, not 0.530.
+
+_(bridged evaluation with shuffled / mean-state controls, hand-off sweep and probes: filled in
+from `runs/qwen3p5_9b_to_rwkv7_1p5b/` when phase C completes)_
 
 ## Summary against the write-up's claims
 

@@ -5,6 +5,7 @@
 set -u
 cd "$(dirname "$0")/.."
 export PYTHONPATH=$PWD CUDA_DEVICE_ORDER=PCI_BUS_ID PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+trap 'pkill -P $$; exit 130' INT TERM   # killing this script must also kill its running python child
 CFG=configs/qwen3p5_9b_to_rwkv7_1p5b.yaml
 NAME=qwen3p5_9b_to_rwkv7_1p5b
 R=runs/$NAME
