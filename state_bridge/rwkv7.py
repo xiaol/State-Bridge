@@ -337,20 +337,43 @@ class Rwkv7ForCausalLM(nn.Module):
             att_x.append(ax); wkv.append(s); ffn_x.append(fx)
             if output_hidden_states:
                 hidden.append(x)
-        logits = self.head(_ln(self.ln_out, x))
+        h = _ln(self.ln_out, x)
         if T != T_in:
-            logits = logits[:, :T_in]
+            h = h[:, :T_in]
             if labels is not None:
                 labels = labels[:, :T_in]
             if output_hidden_states:
-                hidden = [h[:, :T_in] for h in hidden]
-        loss = None
+                hidden = [hh[:, :T_in] for hh in hidden]
+        loss, logits = None, None
         if labels is not None:
-            shift_logits = logits[:, :-1].float()
-            shift_labels = labels[:, 1:]
-            loss = F.cross_entropy(shift_logits.reshape(-1, shift_logits.shape[-1]), shift_labels.reshape(-1), ignore_index=-100)
+            # Memory-efficient loss: the head is applied only at labelled positions, in chunks, under
+            # gradient checkpointing.  Full [B, T, 65536] logits in fp32 plus their gradient were the
+            # largest tensors of a training step; logits are not returned in this mode.
+            loss = self._chunked_ce(h, labels)
+        else:
+            logits = self.head(h)
         new_state = Rwkv7State(torch.stack(att_x), torch.stack(wkv), torch.stack(ffn_x))
         return SimpleNamespace(logits=logits, loss=loss, hidden_states=tuple(hidden) if hidden else None, state=new_state, past_key_values=None)
+
+    def _chunked_ce(self, h: torch.Tensor, labels: torch.Tensor, chunk: int = 2048) -> torch.Tensor:
+        y = labels[:, 1:]
+        keep = y != -100
+        hs, ys = h[:, :-1][keep], y[keep]
+        if hs.shape[0] == 0:
+            return (h.sum() * 0.0).float()
+
+        def ce(a, b):
+            return F.cross_entropy(self.head(a).float(), b, reduction="sum")
+
+        total = 0.0
+        for i in range(0, hs.shape[0], chunk):
+            if torch.is_grad_enabled():
+                from torch.utils.checkpoint import checkpoint
+
+                total = total + checkpoint(ce, hs[i : i + chunk], ys[i : i + chunk], use_reentrant=False)
+            else:
+                total = total + ce(hs[i : i + chunk], ys[i : i + chunk])
+        return total / hs.shape[0]
 
     @torch.no_grad()
     def generate_greedy(self, tokenizer: WorldTokenizer, prompt_ids: list[list[int]], max_new_tokens: int, state: Rwkv7State | None = None, inputs_embeds: torch.Tensor | None = None, attention_mask: torch.Tensor | None = None) -> list[str]:
