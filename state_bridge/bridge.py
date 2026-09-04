@@ -221,6 +221,57 @@ class KVHead(nn.Module):
                 self.base.data[l, 1] = v[0, :, idx].transpose(0, 1).reshape(self.K, -1).float()
 
 
+class StateHead(nn.Module):
+    """Deep injection for an RNN receiver: turns slots [B, K, d] into an RWKV-7 initial state.
+
+    Each slot becomes one key/value pair per layer and head, and the WKV state is the sum of
+    their outer products, ``S0[l, h] = sum_j v_j k_j^T``: exactly the object the recurrence
+    accumulates when it reads tokens, so K slots play the role of K virtual tokens read before
+    the prompt.  Per layer the sum is RMS-normalised, rescaled to the receiver's own state
+    statistics (``calib``, measured on a real prompt), gated, and added to a learned constant
+    state (the state-tuning component) initialised from that prompt's real state.  The
+    time-shift vectors are learned constants initialised the same way.
+    """
+
+    def __init__(self, d: int, num_layers: int, num_heads: int, head_size: int, hidden: int, num_slots: int, gate_init: float = 0.1, residual_base: bool = True):
+        super().__init__()
+        self.L, self.H, self.N, self.C, self.K = num_layers, num_heads, head_size, hidden, num_slots
+        self.proj = nn.Linear(d, num_layers * 2 * num_heads * head_size)
+        self.register_buffer("calib", torch.ones(num_layers))
+        self.gain = nn.Parameter(torch.ones(num_layers))
+        self.gate = nn.Parameter(torch.full((num_layers,), float(gate_init)))
+        self.base = nn.Parameter(torch.zeros(num_layers, num_heads, head_size, head_size)) if residual_base else None
+        self.att_x = nn.Parameter(torch.zeros(num_layers, hidden))
+        self.ffn_x = nn.Parameter(torch.zeros(num_layers, hidden))
+
+    def forward(self, slots: torch.Tensor):
+        """Returns (att_x [L,B,C], wkv [L,B,H,N,N], ffn_x [L,B,C]) in fp32."""
+        B, K, _ = slots.shape
+        kv = self.proj(slots.float()).view(B, K, self.L, 2, self.H, self.N)
+        S = torch.einsum("bklhi,bklhj->lbhij", kv[:, :, :, 1], kv[:, :, :, 0])  # sum_j v_j k_j^T
+        S = S / (S.pow(2).mean((-1, -2), keepdim=True).sqrt() + 1e-6)
+        S = S * (self.calib * self.gain * self.gate)[:, None, None, None, None]
+        if self.base is not None:
+            S = S + self.base[:, None]
+        att = self.att_x[:, None].expand(-1, B, -1)
+        ffn = self.ffn_x[:, None].expand(-1, B, -1)
+        return att, S, ffn
+
+    @torch.no_grad()
+    def calibrate(self, receiver, text: str) -> None:
+        """Measure the receiver's per-layer state RMS on a real prompt and initialise the
+        constant state and time-shift vectors from that prompt's actual state."""
+        enc = receiver.tokenizer(text, return_tensors="pt")
+        out = receiver.model(input_ids=enc["input_ids"].to(receiver.device), attention_mask=enc["attention_mask"].to(receiver.device))
+        st = out.state
+        for l in range(self.L):
+            self.calib[l] = st.wkv[l, 0].float().pow(2).mean().sqrt().clamp(min=1e-6)
+        if self.base is not None:
+            self.base.data.copy_(st.wkv[:, 0].float())
+        self.att_x.data.copy_(st.att_x[:, 0].float())
+        self.ffn_x.data.copy_(st.ffn_x[:, 0].float())
+
+
 def layer_kv(cache, l: int):
     """Key / value tensors of layer ``l`` across transformers cache API versions."""
     if hasattr(cache, "layers"):
@@ -228,9 +279,11 @@ def layer_kv(cache, l: int):
     return cache.key_cache[l], cache.value_cache[l]
 
 
-def build_bridge(bcfg: dict, in_dim: int, out_dim: int, target_rms: float, kv_dims: tuple[int, int, int] | None = None) -> BridgeBase:
-    """``kv_dims`` = (num_layers, num_kv_heads, head_dim) of the receiver; required when
-    ``bcfg["injection"] == "kv"``."""
+def build_bridge(bcfg: dict, in_dim: int, out_dim: int, target_rms: float, kv_dims: tuple[int, int, int] | None = None,
+                 state_dims: tuple[int, int, int, int] | None = None) -> BridgeBase:
+    """``kv_dims`` = (num_layers, num_kv_heads, head_dim) of a transformer receiver, required
+    for ``injection: kv``; ``state_dims`` = (num_layers, num_heads, head_size, hidden) of an
+    RWKV-7 receiver, required for ``injection: state``."""
     kind = bcfg["type"]
     common = dict(in_dim=in_dim, out_dim=out_dim, target_rms=target_rms)
     extra = dict(num_prefix=bcfg.get("num_prefix", 0), gate_init=bcfg.get("gate_init", 1.0))
@@ -247,24 +300,31 @@ def build_bridge(bcfg: dict, in_dim: int, out_dim: int, target_rms: float, kv_di
         raise ValueError(f"unknown bridge type {kind!r}")
     bridge.injection = bcfg.get("injection", "embed")
     bridge.kv_head = None
+    bridge.state_head = None
     bridge.kv_dims = kv_dims
+    bridge.state_dims = state_dims
+    fixed = getattr(bridge, "num_slots", None)
     if bridge.injection == "kv":
         if kv_dims is None:
             raise ValueError("kv injection needs the receiver's (layers, kv_heads, head_dim)")
-        fixed = getattr(bridge, "num_slots", None)
         bridge.kv_head = KVHead(out_dim, *kv_dims, num_slots=fixed or 0, gate_init=bcfg.get("kv_gate_init", 0.3),
                                 residual_base=bcfg.get("residual_base", True) and fixed is not None)
+    elif bridge.injection == "state":
+        if state_dims is None:
+            raise ValueError("state injection needs an RWKV-7 receiver (layers, heads, head_size, hidden)")
+        bridge.state_head = StateHead(out_dim, *state_dims, num_slots=fixed or 0, gate_init=bcfg.get("kv_gate_init", 0.1),
+                                      residual_base=bcfg.get("residual_base", True))
     return bridge
 
 
 def save_bridge(bridge: BridgeBase, cfg: dict, path) -> None:
-    torch.save({"cfg": cfg, "in_dim": bridge.in_dim, "out_dim": bridge.out_dim, "kv_dims": bridge.kv_dims, "state_dict": bridge.state_dict()}, path)
+    torch.save({"cfg": cfg, "in_dim": bridge.in_dim, "out_dim": bridge.out_dim, "kv_dims": bridge.kv_dims, "state_dims": bridge.state_dims, "state_dict": bridge.state_dict()}, path)
 
 
 def load_bridge(path, map_location="cpu") -> tuple[BridgeBase, dict]:
     ckpt = torch.load(path, map_location=map_location, weights_only=False)
     cfg = ckpt["cfg"]
-    bridge = build_bridge(cfg["bridge"], ckpt["in_dim"], ckpt["out_dim"], target_rms=1.0, kv_dims=ckpt.get("kv_dims"))
+    bridge = build_bridge(cfg["bridge"], ckpt["in_dim"], ckpt["out_dim"], target_rms=1.0, kv_dims=ckpt.get("kv_dims"), state_dims=ckpt.get("state_dims"))
     missing, unexpected = bridge.load_state_dict(ckpt["state_dict"], strict=False)
     # checkpoints written before the gate existed behave as gate == 1, which is its default init here
     if unexpected or set(missing) - {"gate"}:

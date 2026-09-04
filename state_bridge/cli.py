@@ -55,7 +55,7 @@ def main(argv: list[str] | None = None) -> None:
         import json
         from .compute import ModelCost, report
         from .config import run_dir
-        from .models import load_model
+        from .models import load_role
         out = run_dir(cfg)
         acc = {}
         for m in ("receiver", "sender", "bridged"):
@@ -64,7 +64,7 @@ def main(argv: list[str] | None = None) -> None:
                 acc[m] = json.load(open(f))["acc"]
         costs = []
         for role in ("sender", "receiver"):
-            lm = load_model(cfg["models"][role]["path"], "cpu", "bfloat16", role)
+            lm = load_role(cfg, role, device="cpu")
             costs.append(ModelCost(role, lm.non_embedding_params, lm.num_layers, lm.hidden_size))
         text = report(costs[0], costs[1], prompt_tokens=int(cfg.get("compute", {}).get("prompt_tokens", 160)), gen_tokens=int(cfg.get("compute", {}).get("gen_tokens", 160)),
                       num_slots=cfg["bridge"]["num_slots"], acc=acc)

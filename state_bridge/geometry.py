@@ -17,7 +17,7 @@ import torch
 
 from .config import run_dir
 from .data import load_examples
-from .models import SenderEncoder, load_model
+from .models import SenderEncoder, load_role
 
 
 def linear_cka(X: np.ndarray, Y: np.ndarray) -> float:
@@ -59,8 +59,8 @@ def pooled_layers(encoder: SenderEncoder, texts: list[str], bs: int = 16) -> np.
 def run_geometry(cfg: dict) -> dict:
     out = run_dir(cfg)
     gcfg, mcfg = cfg["geometry"], cfg["models"]
-    sender = load_model(mcfg["sender"]["path"], mcfg["sender"]["device"], mcfg["sender"]["dtype"], "sender")
-    receiver = load_model(mcfg["receiver"]["path"], mcfg["receiver"]["device"], mcfg["receiver"]["dtype"], "receiver")
+    sender = load_role(cfg, "sender")
+    receiver = load_role(cfg, "receiver")
     examples = load_examples(cfg["data"], "train", gcfg["num_texts"], cfg["seed"])
     texts = [ex.question for ex in examples]  # raw text, no chat template: the same string for both models
     S = pooled_layers(SenderEncoder(sender, [-1], mcfg["max_prompt_tokens"]), texts)

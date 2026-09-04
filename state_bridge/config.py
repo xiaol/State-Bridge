@@ -16,7 +16,10 @@ DEFAULTS: dict[str, Any] = {
     "hf_endpoint": None,  # e.g. https://hf-mirror.com when huggingface.co is unreachable
     "models": {
         "sender": {"path": "Qwen/Qwen3-1.7B", "device": "cuda:1", "dtype": "bfloat16"},
-        "receiver": {"path": "Qwen/Qwen3-0.6B", "device": "cuda:0", "dtype": "bfloat16"},
+        # A ".pth" receiver path loads an official RWKV-7 checkpoint (state_bridge.rwkv7); then
+        # "tokenizer" may point at rwkv_vocab_v20230424.txt and "chat_prefix" is appended after
+        # "Assistant:" (e.g. " <think>\n</think>\n" to skip RWKV7-G1 reasoning).
+        "receiver": {"path": "Qwen/Qwen3-0.6B", "device": "cuda:0", "dtype": "bfloat16", "tokenizer": None, "chat_prefix": ""},
         # Which sender layers cross the bridge (hidden_states index: 0 = embeddings,
         # i = output of block i, negative counts from the end).  Several layers are
         # concatenated on the feature axis.
@@ -27,7 +30,8 @@ DEFAULTS: dict[str, Any] = {
         # resampler | per_token | prompt_tuning (control: same slots, no sender input)
         "type": "resampler",
         # embed: slots enter the receiver's input-embedding sequence (soft tokens)
-        # kv:    slots are projected to key/value prefixes in every receiver layer (deep injection)
+        # kv:    slots are projected to key/value prefixes in every receiver layer (transformer receiver)
+        # state: slots are written into the initial recurrent state of every layer (RWKV-7 receiver)
         "injection": "kv",
         "kv_gate_init": 0.1,
         "num_slots": 64,

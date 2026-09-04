@@ -90,13 +90,13 @@ def encode_prompts(receiver: LoadedModel, texts: list[str], max_tokens: int | No
 
 
 def encode_targets(receiver: LoadedModel, texts: list[str], max_tokens: int | None = None) -> list[list[int]]:
-    eos = receiver.tokenizer.eos_token_id
+    eos = receiver.target_eos_ids
     ids = receiver.tokenizer(texts, add_special_tokens=False)["input_ids"]
     out = []
     for x in ids:
         if max_tokens is not None:
-            x = x[: max_tokens - 1]
-        out.append(list(x) + [eos])
+            x = x[: max_tokens - len(eos)]
+        out.append(list(x) + eos)
     return out
 
 

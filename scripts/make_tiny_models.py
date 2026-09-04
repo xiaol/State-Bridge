@@ -34,6 +34,25 @@ def make_model(tokenizer, hidden: int, layers: int, heads: int, seed: int) -> Qw
     return Qwen3ForCausalLM(cfg)
 
 
+def make_tiny_rwkv7(path: Path, seed: int = 3) -> None:
+    """A tiny random RWKV-7 in the official checkpoint layout (World vocabulary, 65536 tokens)."""
+    from types import SimpleNamespace
+
+    from state_bridge.rwkv7 import Rwkv7ForCausalLM
+
+    torch.manual_seed(seed)
+    cfg = SimpleNamespace(model_type="rwkv7", hidden_size=64, num_hidden_layers=2, vocab_size=65536, head_size=16, num_heads=4, dim_ffn=128,
+                          d_decay=16, d_aaa=16, d_mv=16, d_gate=32, num_attention_heads=4, num_key_value_heads=4, head_dim=16, tie_word_embeddings=False)
+    m = Rwkv7ForCausalLM(cfg)
+    for p in m.parameters():
+        torch.nn.init.normal_(p, std=0.1)
+    with torch.no_grad():
+        for blk in m.blocks:
+            blk.att.w0.fill_(-1.0)
+    torch.save(m.state_dict(), path)
+    print(f"wrote {path}: {sum(p.numel() for p in m.parameters())/1e6:.2f}M params")
+
+
 def main(out: str) -> None:
     import sys
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -47,6 +66,8 @@ def main(out: str) -> None:
         m.save_pretrained(d)
         tok.save_pretrained(d)
         print(f"wrote {d}: {sum(p.numel() for p in m.parameters())/1e6:.2f}M params")
+    Path(out).mkdir(parents=True, exist_ok=True)
+    make_tiny_rwkv7(Path(out) / "receiver_rwkv7.pth")
 
 
 if __name__ == "__main__":

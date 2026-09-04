@@ -26,6 +26,8 @@ MODES_NEED_BRIDGE = {"bridged", "bridged_shuffled", "bridged_ablated"}
 
 @torch.no_grad()
 def generate_plain(lm: LoadedModel, prompts: list[str], max_new_tokens: int) -> list[str]:
+    if lm.kind == "rwkv7":
+        return lm.model.generate_greedy(lm.tokenizer, lm.tokenizer(prompts)["input_ids"], max_new_tokens)
     enc = tokenize_batch(lm, prompts, padding_side="left")
     out = lm.model.generate(
         input_ids=enc["input_ids"].to(lm.device),

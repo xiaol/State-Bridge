@@ -19,6 +19,7 @@ class LoadedModel:
     dtype: torch.dtype
     hidden_size: int
     num_layers: int
+    kind: str = "hf"  # "hf" (transformers causal LM) or "rwkv7" (state_bridge.rwkv7)
 
     def chat_prompt(self, user: str, assistant_prefix: str | None = None) -> str:
         """Render a single-turn chat prompt for this model (thinking disabled).
@@ -35,6 +36,14 @@ class LoadedModel:
         if assistant_prefix:
             text = text + assistant_prefix
         return text
+
+    @property
+    def target_eos_ids(self) -> list[int]:
+        """Tokens appended to a training target: EOS for chat transformers, a blank line for
+        RWKV World models (which end a turn with ``\\n\\n`` rather than an EOS token)."""
+        if self.kind == "rwkv7":
+            return self.tokenizer.encode("\n\n")
+        return [self.tokenizer.eos_token_id]
 
     def embed(self, ids: torch.Tensor) -> torch.Tensor:
         return self.model.get_input_embeddings()(ids.to(self.device))
@@ -62,9 +71,17 @@ def _text_config(config):
     return getattr(config, "text_config", None) or config
 
 
-def load_model(path: str, device: str = "cuda:0", dtype: str = "bfloat16", name: str | None = None) -> LoadedModel:
-    """Load a causal LM, freeze it, and put it in eval mode."""
+def load_model(path: str, device: str = "cuda:0", dtype: str = "bfloat16", name: str | None = None, tokenizer_path: str | None = None, chat_prefix: str = "") -> LoadedModel:
+    """Load a causal LM, freeze it, and put it in eval mode.  A ``.pth`` path is treated as an
+    official RWKV-7 checkpoint (pure-PyTorch implementation in ``state_bridge.rwkv7``)."""
     torch_dtype = DTYPES[dtype]
+    if path.endswith(".pth"):
+        from .rwkv7 import WorldTokenizer, find_vocab, load_rwkv7
+
+        model = load_rwkv7(path, device, torch_dtype)
+        tokenizer = WorldTokenizer(find_vocab(path, tokenizer_path), chat_prefix=chat_prefix)
+        return LoadedModel(name=name or path, model=model, tokenizer=tokenizer, device=torch.device(device), dtype=torch_dtype,
+                           hidden_size=model.config.hidden_size, num_layers=model.config.num_hidden_layers, kind="rwkv7")
     tokenizer = AutoTokenizer.from_pretrained(path)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
@@ -83,6 +100,12 @@ def load_model(path: str, device: str = "cuda:0", dtype: str = "bfloat16", name:
         hidden_size=tc.hidden_size,
         num_layers=tc.num_hidden_layers,
     )
+
+
+def load_role(cfg: dict, role: str, device: str | None = None, dtype: str | None = None) -> LoadedModel:
+    """Load ``cfg["models"][role]`` with its optional ``tokenizer`` / ``chat_prefix`` extras."""
+    m = cfg["models"][role]
+    return load_model(m["path"], device or m["device"], dtype or m["dtype"], name=role, tokenizer_path=m.get("tokenizer"), chat_prefix=m.get("chat_prefix", "") or "")
 
 
 def tokenize_batch(lm: LoadedModel, texts: list[str], padding_side: str, max_length: int | None = None):

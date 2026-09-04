@@ -1,0 +1,16 @@
+# Offline smoke test with an RNN receiver: tiny random transformer sender, tiny random RWKV-7
+# receiver (official checkpoint layout, World vocabulary), state injection, synthetic data, CPU.
+# Run scripts/make_tiny_models.py first.
+run_name: smoke_rwkv7
+models:
+  sender: {path: runs/tiny/sender, device: cpu, dtype: float32}
+  receiver: {path: runs/tiny/receiver_rwkv7.pth, tokenizer: assets/rwkv_vocab_v20230424.txt, chat_prefix: "", device: cpu, dtype: float32}
+  sender_layers: [-2, -1]
+  max_prompt_tokens: 128
+bridge: {type: resampler, injection: state, num_slots: 8, d_model: 64, depth: 1, heads: 4, position: prefix}
+data: {name: synthetic, train_limit: 256, eval_limit: 32, val_size: 32, max_target_tokens: 48}
+train: {epochs: 1, batch_size: 16, lr: 1.0e-3, warmup_steps: 2, log_every: 2, eval_every: 7}
+eval: {batch_size: 16, max_new_tokens: 24, sender_max_new_tokens: 24, modes: [receiver, sender, bridged, bridged_shuffled, bridged_ablated]}
+handoff: {ks: [0, 4], limit: 32, batch_size: 16}
+geometry: {num_texts: 64, layer_stride: 1}
+observe: {limit: 32, steer_alphas: [-1.0, 0.0, 1.0]}

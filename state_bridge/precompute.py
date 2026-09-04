@@ -21,7 +21,7 @@ from pathlib import Path
 from .config import run_dir
 from .data import extract_answer, is_correct, load_examples
 from .evaluate import generate_plain
-from .models import load_model
+from .models import load_role
 
 
 def _read_rows(paths) -> dict[str, dict]:
@@ -41,8 +41,7 @@ def run_precompute(cfg: dict, role: str = "sender", shard: str = "0/1", device: 
     ``wrong:<file>`` to use one specific receiver generation file.  ``tag`` names the output."""
     out = run_dir(cfg)
     i, n = (int(x) for x in shard.split("/"))
-    mcfg = cfg["models"][role]
-    lm = load_model(mcfg["path"], device or mcfg["device"], mcfg["dtype"], role)
+    lm = load_role(cfg, role, device)
     examples = load_examples(cfg["data"], split, cfg["data"]["train_limit"], cfg["seed"])
     if subset and subset.startswith("wrong"):
         files = [subset.split(":", 1)[1]] if ":" in subset else sorted(out.glob(f"gen_receiver_{split}.*.jsonl"))

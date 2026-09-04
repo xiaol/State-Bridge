@@ -38,7 +38,8 @@ scale one machine can run:
 |---|---|---|---|
 | `configs/qwen3p5_9b_to_qwen3_0p6b.yaml` | Qwen3.5-9B | Qwen3-0.6B | different generations and tokenizers (248k vs 152k vocab); hybrid linear-attention sender |
 | `configs/qwen3_1p7b_to_0p6b.yaml` | Qwen3-1.7B | Qwen3-0.6B | same family, both small downloads |
-| `configs/smoke.yaml` | tiny random | tiny random | offline CPU smoke test, ~1 minute |
+| `configs/qwen3p5_9b_to_rwkv7_1p5b.yaml` | Qwen3.5-9B | **RWKV-7 G1 1.5B** (RNN) | cross-architecture: the sender's state is written into the RNN's recurrent state (`bridge.injection: state`); pure-PyTorch RWKV-7 + fused CUDA kernel included |
+| `configs/smoke.yaml`, `configs/smoke_rwkv7.yaml` | tiny random | tiny random (transformer / RWKV-7) | offline CPU smoke tests, ~2 minutes |
 
 Benchmark: GSM8K (train split for the bridge, test split for evaluation), greedy decoding,
 thinking disabled, answer = last `\boxed{}`.
@@ -46,7 +47,8 @@ thinking disabled, answer = last `\boxed{}`.
 ## Quick start
 
 Requirements: Python 3.10+, PyTorch 2.1+, transformers 4.45+, datasets, numpy, pyyaml. No
-other dependencies. Install in editable mode or just set `PYTHONPATH`:
+other dependencies (a CUDA toolkit with `nvcc` and `ninja` is optional: it enables the fused
+RWKV-7 kernel). Install in editable mode or just set `PYTHONPATH`:
 
 ```bash
 pip install -e .            # or: export PYTHONPATH=$PWD
@@ -103,12 +105,23 @@ prompt tuning and learns sender-dependent deviations on top, which trains far be
 frozen receiver than sender-dependent slots from scratch (see `docs/results.md`).
 `PromptTuningBridge` is the control: same slots, learned constants, sender ignored.
 
-**Receiver side.** Two injection modes. `bridge.injection: kv` (default): the slots are
-projected into key/value prefixes for every receiver layer and placed in its cache before the
-prompt, so each attention layer can read the transferred state directly (prefix tuning with a
-sender-computed prefix). `bridge.injection: embed`: the slots are inserted into the receiver's
-input-embedding sequence as soft tokens (`bridge.position: prefix` or `suffix`). The embedding
-channel proved too weak for a frozen 0.6B receiver (see `docs/results.md`).
+**Receiver side.** Three injection modes. `bridge.injection: kv` (default for transformers):
+the slots are projected into key/value prefixes for every receiver layer and placed in its
+cache before the prompt, so each attention layer can read the transferred state directly
+(prefix tuning with a sender-computed prefix). `bridge.injection: state` (RWKV-7 receivers):
+each slot becomes a key/value pair per layer and head and the receiver's *initial recurrent
+state* is set to the sum of their outer products, exactly the object the RNN accumulates when
+it reads tokens; the RNN then reads the prompt and writes the answer from that state.
+`bridge.injection: embed`: the slots are inserted into the receiver's input-embedding sequence
+as soft tokens. The embedding channel proved too weak for a frozen 0.6B receiver (see
+`docs/results.md`).
+
+**RWKV-7 receiver.** `state_bridge/rwkv7.py` is a pure-PyTorch RWKV-7 that loads official
+`.pth` checkpoints (any `models.receiver.path` ending in `.pth`), exposes the recurrent state
+as an input and output, and includes the World tokenizer (`assets/rwkv_vocab_v20230424.txt`).
+`state_bridge/wkv7_kernel.py` compiles a fused CUDA kernel for the recurrence with gradients
+into the initial state on first use (about 75x faster than the Python loop for training); it
+falls back to the loop when no CUDA toolchain is present.
 
 **Training.** Cross-entropy of the frozen receiver on a target solution, answer tokens only.
 Gradients flow through the frozen receiver into the slots and the bridge. AdamW, cosine
@@ -164,8 +177,10 @@ Full tables and discussion in [`docs/results.md`](docs/results.md). In short:
 state_bridge/
   config.py      defaults, YAML loading, key=value overrides
   models.py      frozen model loading, chat prompts, SenderEncoder (prefill -> hidden states)
-  bridge.py      ResamplerBridge / PerTokenBridge / PromptTuningBridge, save/load
-  injection.py   slots into the receiver's embedding sequence; padding; labels; generate
+  bridge.py      ResamplerBridge / PerTokenBridge / PromptTuningBridge; KVHead (kv) and StateHead (RWKV state) injection heads
+  injection.py   slots into the receiver's embedding sequence or KV cache; padding; labels; generate
+  rwkv7.py       pure-PyTorch RWKV-7 with explicit recurrent state + World tokenizer (loads official .pth)
+  wkv7_kernel.py JIT-compiled CUDA WKV-7 recurrence with initial-state gradients (cuda/wkv7_state.cu)
   data.py        GSM8K / synthetic / JSONL, answer extraction, difficulty buckets
   train.py       BridgeSystem (sender + bridge + receiver) and the training loop
   evaluate.py    eval modes, controls, summary with gap closure
@@ -175,10 +190,11 @@ state_bridge/
   compute.py     FLOPs cost model and equivalent-model estimate
   precompute.py  sender-written solutions for hand-off-aware training
   cli.py         python -m state_bridge <command>
-configs/         smoke.yaml, qwen3_1p7b_to_0p6b.yaml, qwen3p5_9b_to_qwen3_0p6b.yaml
-scripts/         smoke.sh, run_all.sh, make_tiny_models.py
-tests/           unit and pipeline tests on tiny random models
-docs/            source-notes.md, design.md, results.md
+configs/         smoke*.yaml, qwen3_1p7b_to_0p6b.yaml, qwen3p5_9b_to_qwen3_0p6b.yaml, qwen3p5_9b_to_rwkv7_1p5b.yaml
+scripts/         smoke.sh, run_all.sh, rwkv7_phase_{a,b}.sh, wait_gpu.sh, compare_runs.py, make_tiny_models.py
+assets/          rwkv_vocab_v20230424.txt (RWKV World tokenizer vocabulary)
+tests/           unit and pipeline tests on tiny random models (transformer and RWKV-7 receivers)
+docs/            source-notes.md, design.md, results.md, runs/ (raw evaluation outputs)
 ```
 
 ## Differences from the original and known limits

@@ -1,0 +1,23 @@
+# Cross-architecture pair: a transformer reads, an RNN writes.  Qwen3.5-9B (sender) hands its
+# prefill state to RWKV-7 G1j 1.5B (receiver) by writing it into the receiver's initial
+# recurrent state (bridge.injection: state).  The RWKV-7 model runs on the pure-PyTorch
+# implementation in state_bridge/rwkv7.py from the official .pth checkpoint.
+run_name: qwen3p5_9b_to_rwkv7_1p5b
+models:
+  sender: {path: /root/x/Qwen3.5-9B, device: "cuda:1", dtype: bfloat16}
+  receiver:
+    path: /root/x/models/rwkv7/rwkv7-g1j-1.5b-20260831-ctx16384.pth
+    tokenizer: /root/x/models/rwkv7/rwkv_vocab_v20230424.txt
+    chat_prefix: " <think>\n</think>\n"
+    device: "cuda:0"
+    dtype: bfloat16
+  sender_layers: [-8, -4]
+  max_prompt_tokens: 512
+bridge: {type: resampler, injection: state, num_slots: 64, d_model: 1024, depth: 2, heads: 8, residual_base: true, kv_gate_init: 0.1, position: prefix}
+data: {name: gsm8k, path: runs/data/gsm8k, val_size: 200, max_target_tokens: 448,
+       targets: runs/qwen3p5_9b_to_rwkv7_1p5b/targets_train.jsonl}
+train: {epochs: 2, batch_size: 16, lr: 3.0e-4, warmup_steps: 50, log_every: 20, eval_every: 200}
+eval: {batch_size: 48, max_new_tokens: 384, sender_max_new_tokens: 512, modes: [receiver, bridged, bridged_shuffled, bridged_ablated, sender]}
+handoff: {ks: [0, 32, 128, 256], limit: 160, batch_size: 32}
+geometry: {num_texts: 256, layer_stride: 4}
+observe: {limit: 500}

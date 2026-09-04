@@ -65,6 +65,42 @@ gives every attention layer direct access to the transferred state, which is als
 reading of "prefill state crossing" in the write-up. Gates and gains train with a 10x learning
 rate and no weight decay so the sender-dependent part can grow.
 
+## 1b. An RNN receiver: writing into the state (RWKV-7)
+
+A transformer receiver has no single object that *is* its memory of the prompt: the
+information is spread over a key/value cache that grows with the prompt. A recurrent receiver
+does: RWKV-7 ("Goose") keeps, per layer, one `H x N x N` WKV matrix plus two time-shift
+vectors, and that fixed-size state is everything it knows about what it has read. This makes
+the RNN the natural receiver for a *state* bridge, and gives the write-up's phrase "hidden
+states cross the bridge" a literal meaning: the sender's state is translated into the
+receiver's initial state.
+
+- `state_bridge/rwkv7.py` is a pure-PyTorch RWKV-7 that loads official `.pth` checkpoints
+  (BlinkDL layout; the RWKV7-G1 series was tested), exposes the recurrent state as an input
+  and an output of `forward`, and ships the World trie tokenizer. Padding is on the right and
+  pad positions are made exactly inert (no write, decay 1), so every row's output state is its
+  state at its own last real token; left padding would decay the initial state before the
+  first real token.
+- `state_bridge/wkv7_kernel.py` + `cuda/wkv7_state.cu` is a fused CUDA kernel for the
+  recurrence with gradients into the *initial state*, compiled at first use (adapted from the
+  reference RWKV kernels). A training step on the 0.4B model went from 67 s (Python loop,
+  gradient-checkpointed) to 0.9 s. The kernel matched the reference loop to 3e-3 relative on
+  every gradient including `ds0`. Without a CUDA toolchain the code falls back to the loop.
+- `bridge.StateHead` (`bridge.injection: state`): each slot becomes one key/value pair per
+  layer and head, and the initial WKV state is `S0[l,h] = sum_j v_j k_j^T`, the same object the
+  recurrence accumulates when it reads tokens, so K slots act as K virtual tokens read before
+  the prompt. Per layer the sum is RMS-normalised, rescaled to the receiver's measured state
+  statistics, gated, and added to a learned constant state initialised from a real prompt's
+  state (the state-tuning component; with `bridge.type: prompt_tuning` this constant is the
+  whole bridge and serves as the control). Time-shift vectors are learned constants.
+- Turn ending: World models end a turn with a blank line rather than an EOS token, but blank
+  lines also occur inside solutions. Generation stops at EOS, at a hallucinated `\n\nUser:`,
+  or at a blank line once a `\boxed{}` answer has been written; training targets end with
+  `\n\n` instead of EOS.
+- The RWKV7-G1 models reason by default; the chat prefix `" <think>\n</think>\n"` after
+  `Assistant:` skips the thinking block so the receiver answers directly, as the transformer
+  receivers do with `enable_thinking=False`.
+
 ## 2. Both models frozen
 
 `models.load_model` calls `requires_grad_(False)` and `eval()` on both models. The optimiser

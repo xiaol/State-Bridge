@@ -20,7 +20,7 @@ from .bridge import build_bridge, save_bridge
 from .config import dump_config, run_dir
 from .data import Example, apply_targets, load_examples, load_sender_generations
 from .injection import build_receiver_batch, encode_prompts, encode_targets, forward_with_prefix, generate, greedy_generate_with_prefix
-from .models import LoadedModel, SenderEncoder, load_model
+from .models import LoadedModel, SenderEncoder, load_role
 
 
 def set_seed(seed: int) -> None:
@@ -42,25 +42,34 @@ class BridgeSystem:
     def __init__(self, cfg: dict, need_sender: bool = True, bridge=None):
         self.cfg = cfg
         mcfg = cfg["models"]
-        self.receiver: LoadedModel = load_model(mcfg["receiver"]["path"], mcfg["receiver"]["device"], mcfg["receiver"]["dtype"], name="receiver")
+        self.receiver: LoadedModel = load_role(cfg, "receiver")
         self.sender: LoadedModel | None = None
         self.encoder: SenderEncoder | None = None
         if need_sender:
-            self.sender = load_model(mcfg["sender"]["path"], mcfg["sender"]["device"], mcfg["sender"]["dtype"], name="sender")
+            self.sender = load_role(cfg, "sender")
             self.encoder = SenderEncoder(self.sender, mcfg["sender_layers"], mcfg["max_prompt_tokens"])
         in_dim = self.encoder.out_dim if self.encoder else 1
         self.position = cfg["bridge"]["position"]
         self.max_prompt = mcfg["max_prompt_tokens"]
         rc = self.receiver.model.config
         rc = getattr(rc, "text_config", None) or rc
-        kv_dims = (rc.num_hidden_layers, rc.num_key_value_heads, getattr(rc, "head_dim", None) or rc.hidden_size // rc.num_attention_heads)
+        kv_dims = state_dims = None
+        if self.receiver.kind == "rwkv7":
+            state_dims = (rc.num_hidden_layers, rc.num_heads, rc.head_size, rc.hidden_size)
+            if cfg["bridge"].get("injection") == "kv":
+                raise ValueError("an RWKV-7 receiver has no key/value cache; use bridge.injection=state (or embed)")
+        else:
+            kv_dims = (rc.num_hidden_layers, rc.num_key_value_heads, getattr(rc, "head_dim", None) or rc.hidden_size // rc.num_attention_heads)
         fresh = bridge is None
         if fresh:
-            bridge = build_bridge(cfg["bridge"], in_dim, self.receiver.hidden_size, target_rms=self.receiver.embedding_rms, kv_dims=kv_dims)
+            bridge = build_bridge(cfg["bridge"], in_dim, self.receiver.hidden_size, target_rms=self.receiver.embedding_rms, kv_dims=kv_dims, state_dims=state_dims)
         self.bridge = bridge.to(self.receiver.device)
         self.injection = getattr(self.bridge, "injection", "embed")
+        calib_text = self.receiver.chat_prompt("Natalia sold clips to 48 of her friends in April, and then she sold half as many clips in May. How many clips did Natalia sell altogether in April and May?")
         if fresh and self.bridge.kv_head is not None:
-            self.bridge.kv_head.calibrate(self.receiver, self.receiver.chat_prompt("Natalia sold clips to 48 of her friends in April, and then she sold half as many clips in May. How many clips did Natalia sell altogether in April and May?"))
+            self.bridge.kv_head.calibrate(self.receiver, calib_text)
+        if fresh and self.bridge.state_head is not None:
+            self.bridge.state_head.calibrate(self.receiver, calib_text)
 
     # ------------------------------------------------------------ helpers
     def sender_prompts(self, batch: list[Example], prefixes: list[str] | None = None) -> list[str]:
@@ -80,6 +89,11 @@ class BridgeSystem:
             if self.injection == "kv":
                 rb = build_receiver_batch(r, prompt_ids, None, None, target_ids, self.position, pad_left=False)
                 out = forward_with_prefix(r, self.bridge.kv_head(slots), slot_mask, rb.inputs_embeds, rb.attention_mask, rb.labels)
+            elif self.injection == "state":
+                from .rwkv7 import Rwkv7State
+
+                rb = build_receiver_batch(r, prompt_ids, None, None, target_ids, self.position, pad_left=False)
+                out = r.model(inputs_embeds=rb.inputs_embeds, attention_mask=rb.attention_mask, labels=rb.labels, state=Rwkv7State(*self.bridge.state_head(slots)))
             else:
                 rb = build_receiver_batch(r, prompt_ids, slots, slot_mask, target_ids, self.position, pad_left=False)
                 out = r.model(inputs_embeds=rb.inputs_embeds, attention_mask=rb.attention_mask, labels=rb.labels, use_cache=False)
@@ -90,6 +104,15 @@ class BridgeSystem:
         """Greedy generation; ``slots=None`` means the receiver runs alone (optionally continuing ``prefixes``)."""
         r = self.receiver
         prompt_ids = self.receiver_prompt_ids(batch, prefixes)
+        if r.kind == "rwkv7":
+            if slots is None:
+                return r.model.generate_greedy(r.tokenizer, prompt_ids, max_new_tokens)
+            if self.injection == "state":
+                from .rwkv7 import Rwkv7State
+
+                return r.model.generate_greedy(r.tokenizer, prompt_ids, max_new_tokens, state=Rwkv7State(*self.bridge.state_head(slots)))
+            rb = build_receiver_batch(r, prompt_ids, slots, slot_mask, None, self.position, pad_left=False)
+            return r.model.generate_greedy(r.tokenizer, prompt_ids, max_new_tokens, inputs_embeds=rb.inputs_embeds, attention_mask=rb.attention_mask)
         if slots is None:
             rb = build_receiver_batch(r, prompt_ids, None, None, None, self.position, pad_left=True)
             return generate(r, rb, max_new_tokens)
