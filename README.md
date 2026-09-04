@@ -149,10 +149,22 @@ Full tables and discussion in [`docs/results.md`](docs/results.md). In short:
 | same bridge, mean slots | 0.641 |
 | sender alone (Qwen3.5-9B) | 0.842 |
 
-- **The headline gain does not reproduce at this scale.** The bridged receiver matches the
-  untouched receiver but the controls match it too: shuffling or ablating the sender's state
-  changes nothing, overall and on the 340 problems only the sender solves. No measurable
-  information crosses the channel in the read-only setting with this pair and budget.
+Cross-architecture pair, the sender's state written into the RNN's initial recurrent state
+(`configs/qwen3p5_9b_to_rwkv7_1p5b.yaml`):
+
+| system | GSM8K accuracy |
+|---|---|
+| receiver alone (RWKV-7 G1 1.5B) | 0.530 |
+| state-tuning control (constant initial state, no sender) | 0.549 |
+| bridge, state injection | 0.560 |
+| same bridge, sender state from the wrong problem | 0.556 |
+| same bridge, mean state | 0.574 |
+
+- **The headline gain does not reproduce at this scale, with either receiver.** The bridged
+  receiver matches (transformer) or slightly beats (RNN, +3 points) the untouched receiver, but
+  the controls match it too: shuffling or ablating the sender's state changes nothing, overall
+  and on the problems only the sender solves. The RNN's gain is the learned constant initial
+  state (state tuning), not instance-specific information from the sender.
 - **Two design traps are documented and fixed.** Training on the terse gold rationales costs the
   receiver 20+ points regardless of bridge (phase 1), so targets are written by the models
   themselves. Soft-token injection at the embedding layer never learned to use the sender

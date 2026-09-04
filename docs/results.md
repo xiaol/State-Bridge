@@ -253,15 +253,64 @@ validation loss 0.2150.
 |---|---|---|---|---|---|---|---|
 | receiver alone | 0 | | 0.530 | 0.637 | 0.441 | 0.313 | 184 |
 | state-tuning control (constant initial state, no sender) | 3.4M | 0.2150 | 0.549 | 0.650 | 0.468 | 0.333 | 230 |
-| **bridge, state injection** | 100M | 0.2148 | _(phase C)_ | | | | |
+| **bridge, state injection** | 100M | 0.2148 | **0.560** | 0.660 | 0.479 | 0.353 | 218 |
+| bridge, **shuffled** sender state (control) | | | 0.556 | | | | |
+| bridge, **mean** state (control) | | | 0.574 | 0.667 | 0.506 | 0.353 | 218 |
 | sender alone | 0 | | 0.842 | 0.923 | 0.814 | 0.560 | 371 |
 
 Unlike the transformer receiver, whose prefix-tuning control *lost* 2 points, the RNN's
 constant learned initial state *gains* 1.9 points over the untouched model (state tuning is a
-known effective adapter for RWKV). The bridge has to beat 0.549, not 0.530.
+known effective adapter for RWKV), and the bridge gains 3.0 (10% of the gap; +13% relative on
+the hard bucket). But the controls again take it away: the same bridge fed the *wrong* problem's
+sender state scores 0.556, and fed the dataset-mean state scores 0.574, higher than with the
+real state. On the 458 problems only the sender solves, bridged / shuffled / mean-state score
+0.334 / 0.319 / 0.356; answer agreement with the sender is 0.54 for every variant against 0.51
+for the receiver alone. Same verdict as for the transformer receiver: the trained initial state
+helps the RNN a little, and none of that help is instance-specific information from the sender.
 
-_(bridged evaluation with shuffled / mean-state controls, hand-off sweep and probes: filled in
-from `runs/qwen3p5_9b_to_rwkv7_1p5b/` when phase C completes)_
+**Text vs latent hand-off (RNN receiver).** 160 test problems; the sender writes k tokens, then
+either the text continues in the receiver or the sender's state over prompt + k tokens crosses
+the bridge and the RNN writes the whole answer:
+
+| sender tokens k | text hand-off | latent hand-off | delta |
+|---|---|---|---|
+| 0 | 0.500 | 0.531 | +3.1 pts |
+| 32 | 0.594 | 0.487 | -10.6 pts |
+| 128 | 0.637 | 0.475 | -16.2 pts |
+| 256 | 0.806 | 0.450 | -35.6 pts |
+
+At k = 0 the latent channel is ahead for the first time in this repository (+3.1 points, which
+is the state-tuning effect; 160 problems, so about one standard error). Beyond k = 0 the curve
+reverses exactly as for the transformer receiver: text hand-off climbs toward the sender's
+accuracy and latent hand-off falls. States over partial reasoning are out of distribution for a
+bridge trained on prefill states.
+
+**Observability (RNN receiver, 500 problems).** Same probes, same intervention:
+
+| representation | answer log-magnitude R^2 | difficulty probe acc (majority 0.78) | receiver-correct probe acc (majority 0.58) |
+|---|---|---|---|
+| sender state | 0.45 | 0.71 | 0.69 |
+| translated slots | **0.00** | 0.73 | 0.71 |
+| RNN's own prompt state (last layer) | 0.37 | 0.73 | 0.64 |
+
+Steering the slots along the answer-magnitude direction with alpha in {-2, -1, 0, +1, +2} slot
+RMS leaves the mean predicted log-magnitude between 1.76 and 1.79 and accuracy between 0.55 and
+0.58: no monotone response. The diagnosis is the same across architectures: the sender's
+prefill state linearly encodes the answer's magnitude, the bridge does not carry it, and the
+receiver is not using it.
+
+**Compute (RNN receiver).** Receiver alone 816 GFLOPs per example, sender alone 4,455, bridged
+pair 3,202 (x3.9 the receiver). The interpolated single model matching the bridged accuracy
+would need about 1.5B parameters and cost 961 GFLOPs, so the bridged pair costs 3.3x more than
+that model.
+
+**Why the RNN pair matters even so.** The channel is now *literal*: the sender's state is
+translated into the receiver's initial recurrent state, a fixed-size object that is the RNN's
+entire memory, and the constant part of that state alone lifts the receiver by 2 points (a
+transformer's prefix cost 2 points). The training and evaluation machinery works across
+architectures with different tokenizers (248k vs 65k vocabularies), different sequence models,
+and a fused kernel that back-propagates into the state. What is missing is the same thing as
+before: pressure on the objective to use instance-specific information from the sender.
 
 **Geometry across architectures.** The same layer-wise analysis as above, transformer sender
 against RNN receiver (256 questions, mean-pooled, 5-fold ridge R^2):
@@ -293,10 +342,12 @@ measure.
 | up to 2x uplift on hard subsets | not reproduced: hard bucket 0.360 vs 0.380 alone |
 | latent hand-off beats text hand-off at every budget | reversed: latent worse by 12-32 pts for k > 0 |
 | 2.5x cheaper than an equivalent mid-sized model | not applicable: no accuracy gain to price; bridged pair costs 8x the receiver |
-| two models share exploitable structure ("we started with the geometry") | reproduced: linear R^2 0.88 mid-layer to mid-layer |
+| two models share exploitable structure ("we started with the geometry") | reproduced: linear R^2 0.88 mid-layer to mid-layer (0.57 transformer to RNN) |
 | a channel is a surface for observability | reproduced as a method: probes and interventions run and were decisive |
+| nothing in the mechanism is particular to a pair | partly: the same bridge trains and evaluates with a transformer or an RNN receiver (Qwen3-0.6B, RWKV-7 1.5B); neither shows transfer |
 
 Honest reading: this repository reproduces the *machinery* and the *premise* of the write-up
 and fails to reproduce its *result* at a scale roughly 80x smaller in sender size and with a
-training budget the write-up does not state. The three levers most likely to change the
-outcome are listed at the end of the phase-2 section.
+training budget the write-up does not state, with two receivers of different architectures.
+The three levers most likely to change the outcome are listed at the end of the phase-2
+section; the RNN receiver, whose state is the whole channel, is the cleaner place to pull them.
