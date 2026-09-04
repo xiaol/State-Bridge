@@ -123,10 +123,40 @@ receiver's style and costs it ~25 points of accuracy, which would swamp any chan
 summary reports gap closed, relative uplift, and both per difficulty bucket (number of
 reasoning lines in the gold solution).
 
-## Results
+## Results (Qwen3.5-9B -> Qwen3-0.6B, GSM8K, 4x A100, about one GPU-hour per bridge)
 
-See [`docs/results.md`](docs/results.md) for the tables produced by the run in this repository
-and a comparison with the numbers claimed in the write-up.
+Full tables and discussion in [`docs/results.md`](docs/results.md). In short:
+
+| system | GSM8K accuracy |
+|---|---|
+| receiver alone (Qwen3-0.6B) | 0.623 |
+| prefix-tuning control (no sender) | 0.604 |
+| bridge, deep key/value injection | 0.632 |
+| same bridge, sender state from the wrong problem | 0.629 |
+| same bridge, mean slots | 0.641 |
+| sender alone (Qwen3.5-9B) | 0.842 |
+
+- **The headline gain does not reproduce at this scale.** The bridged receiver matches the
+  untouched receiver but the controls match it too: shuffling or ablating the sender's state
+  changes nothing, overall and on the 340 problems only the sender solves. No measurable
+  information crosses the channel in the read-only setting with this pair and budget.
+- **Two design traps are documented and fixed.** Training on the terse gold rationales costs the
+  receiver 20+ points regardless of bridge (phase 1), so targets are written by the models
+  themselves. Soft-token injection at the embedding layer never learned to use the sender
+  (its gate stayed at initialisation); deep key/value injection trains cleanly and preserves
+  the receiver, but still finds nothing to transfer.
+- **Geometry reproduces the write-up's premise.** Mean-pooled mid-layer states of the sender
+  linearly predict the receiver's mid layers with R^2 about 0.88 (0.10 from the receiver's own
+  embeddings): the two frozen models share most of their structure, so translation is cheap
+  to find. What is missing is content in the sender's prefill that the receiver lacks.
+- **Hand-off sweep reverses the write-up's curve.** When the sender first reasons for k tokens,
+  text hand-off climbs toward the sender's accuracy (0.675 at k=0 to 0.844 at k=256) while
+  latent hand-off through this bridge falls (0.656 to 0.525): the bridge was trained almost
+  only on prefill states.
+- **Observability works as a method and is decisive.** A linear probe reads the answer's
+  magnitude from the sender's state (R^2 0.45) but not from the translated slots (R^2 0.00),
+  and steering the slots along that direction changes nothing downstream. The channel is
+  measurably empty.
 
 ## Repository layout
 

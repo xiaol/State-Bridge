@@ -62,7 +62,9 @@ def report(sender: ModelCost, receiver: ModelCost, prompt_tokens: int, gen_token
         if not math.isnan(m):
             mid = ModelCost("equivalent-single-model", m, receiver.layers, receiver.hidden)
             mid_flops = mid.flops(prompt_tokens, prompt_tokens / 2) + mid.flops(gen_tokens, prompt_tokens + gen_tokens / 2)
+            ratio = mid_flops / f["bridged"]
+            verdict = (f"the bridged pair uses **{ratio:.2f}x less compute** than that model." if ratio >= 1
+                       else f"the bridged pair costs **{1/ratio:.1f}x more** than that model: at this accuracy the bridge does not pay for the sender's prefill.")
             lines += ["", f"A single model scoring what the bridged pair scores would need about {m/1e9:.2f}B non-embedding parameters",
-                      f"(log-linear interpolation between receiver and sender).  Its cost: {mid_flops/1e9:,.1f} GFLOPs/example,",
-                      f"i.e. the bridged pair uses **{mid_flops/f['bridged']:.2f}x less compute** than that model."]
+                      f"(log-linear interpolation between receiver and sender).  Its cost: {mid_flops/1e9:,.1f} GFLOPs/example, i.e. {verdict}"]
     return "\n".join(lines) + "\n"

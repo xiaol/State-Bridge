@@ -171,8 +171,72 @@ map does most of it for the middle of the network and a non-linear bridge has to
 
 ## Text vs latent hand-off
 
-_(from `runs/qwen3p5_9b_to_qwen3_0p6b_kv/handoff.md`)_
+The sender reads the problem and writes k tokens of its own solution. *Text* hand-off: the
+receiver continues from that text. *Latent* hand-off: the sender's hidden states over prompt +
+k tokens cross the (phase-2 kv) bridge and the receiver writes the whole answer. 160 test
+problems, greedy, `handoff.py`.
+
+| sender tokens k | text hand-off | latent hand-off | delta |
+|---|---|---|---|
+| 0 | 0.675 | 0.656 | -1.9 pts |
+| 32 | 0.644 | 0.525 | -11.9 pts |
+| 128 | 0.744 | 0.494 | -25.0 pts |
+| 256 | 0.844 | 0.525 | -31.9 pts |
+
+The write-up reports the latent channel ahead at every budget, by up to 10 points, with the
+largest margin at k = 0. Here the two channels tie at k = 0 (both are the receiver alone, give
+or take) and diverge the other way as the sender reasons longer: text hand-off climbs toward
+the sender's own accuracy (0.84), latent hand-off falls to about 0.5. The bridge was trained
+almost entirely on prefill states (only about 16% of training examples handed off mid-solution),
+so states over partial reasoning are out of distribution for it and it makes the receiver
+worse than nothing. This is the experiment where a working channel would have to show itself,
+because after 128-256 sender tokens the sender's state demonstrably contains the intermediate
+results (the text channel proves it). A hand-off-heavy training schedule is the obvious next run.
 
 ## Observability
 
-_(from `runs/qwen3p5_9b_to_qwen3_0p6b_kv/observe.md`)_
+Three objects were recorded for 500 test problems: the sender's state (bridge input, mean
+pooled), the translated slots (mean pooled), and the receiver's own last-layer state over the
+prompt. The same linear probes (5-fold cross-validated) on each:
+
+| representation | answer log-magnitude R^2 | difficulty probe acc (majority 0.78) | receiver-correct probe acc (majority 0.63) |
+|---|---|---|---|
+| sender state | 0.45 | 0.69 | 0.64 |
+| translated slots | **0.00** | 0.72 | 0.67 |
+| receiver's own prompt state | 0.20 | 0.71 | 0.63 |
+
+Then an intervention: add a multiple of the probe direction for answer magnitude to every slot
+and measure what the receiver writes (250 problems):
+
+| alpha (x slot RMS) | mean log10 of predicted answer | accuracy |
+|---|---|---|
+| -2 | 1.804 | 0.632 |
+| -1 | 1.788 | 0.632 |
+| 0 | 1.816 | 0.648 |
+| +1 | 1.777 | 0.672 |
+| +2 | 1.783 | 0.648 |
+
+This is the clearest diagnosis in the repository. The magnitude of the answer is linearly
+readable from the sender's prefill state (R^2 0.45, more than twice what the receiver's own
+reading of the prompt holds), and the bridge throws it away (R^2 0.00 in the slots). Steering
+the slots along that direction moves nothing: the receiver's answers keep the same magnitude
+and accuracy, i.e. the direction is neither present nor used. The write-up's proposal, that a
+latent hand-off is a place to record, probe and intervene, works as a *method*: it told us in
+one table that the channel is empty. The part of the proposal that needs a channel carrying
+information could not be exercised.
+
+## Summary against the write-up's claims
+
+| claim | outcome here (9B -> 0.6B, ~1 GPU-hour bridge) |
+|---|---|
+| bridged small model closes ~50% of the gap, +25% accuracy | not reproduced: +0.9 pts, controls equal or better |
+| up to 2x uplift on hard subsets | not reproduced: hard bucket 0.360 vs 0.380 alone |
+| latent hand-off beats text hand-off at every budget | reversed: latent worse by 12-32 pts for k > 0 |
+| 2.5x cheaper than an equivalent mid-sized model | not applicable: no accuracy gain to price; bridged pair costs 8x the receiver |
+| two models share exploitable structure ("we started with the geometry") | reproduced: linear R^2 0.88 mid-layer to mid-layer |
+| a channel is a surface for observability | reproduced as a method: probes and interventions run and were decisive |
+
+Honest reading: this repository reproduces the *machinery* and the *premise* of the write-up
+and fails to reproduce its *result* at a scale roughly 80x smaller in sender size and with a
+training budget the write-up does not state. The three levers most likely to change the
+outcome are listed at the end of the phase-2 section.
