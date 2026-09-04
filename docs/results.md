@@ -263,6 +263,28 @@ known effective adapter for RWKV). The bridge has to beat 0.549, not 0.530.
 _(bridged evaluation with shuffled / mean-state controls, hand-off sweep and probes: filled in
 from `runs/qwen3p5_9b_to_rwkv7_1p5b/` when phase C completes)_
 
+**Geometry across architectures.** The same layer-wise analysis as above, transformer sender
+against RNN receiver (256 questions, mean-pooled, 5-fold ridge R^2):
+
+| sender \ receiver (RWKV-7, 24 layers) | L0 | L4 | L8 | L12 | L16 | L20 | L24 |
+|---|---|---|---|---|---|---|---|
+| L4 | 0.27 | 0.46 | 0.53 | 0.45 | 0.42 | 0.34 | 0.34 |
+| L8 | 0.21 | 0.42 | **0.57** | 0.51 | 0.46 | 0.35 | 0.32 |
+| L16 | 0.11 | 0.35 | 0.52 | 0.51 | 0.45 | 0.27 | 0.25 |
+| L24 | 0.13 | 0.35 | 0.51 | 0.47 | 0.43 | 0.32 | 0.28 |
+| L32 | 0.10 | 0.30 | 0.44 | 0.38 | 0.35 | 0.29 | 0.28 |
+
+Receiver self-baseline (its own embeddings to each layer): 0.01-0.03. Linear CKA peaks at 0.88
+between sender L12-L16 and receiver L12.
+
+The two architectures share structure, but about a third less of it is linearly reachable than
+between the two Qwen transformers (peak R^2 0.57 vs 0.89), and the best-aligned receiver depth
+moves from the early layers to the middle (L8-L12 of 24). In the write-up's framing this is a
+pair where "how much work the translation takes" is larger, so it is a fairer test of a
+*trained* bridge than the same-family pair. Note that the RNN's mean-pooled residual stream is
+not its state; the bridge writes into the WKV matrices, whose geometry this table does not
+measure.
+
 ## Summary against the write-up's claims
 
 | claim | outcome here (9B -> 0.6B, ~1 GPU-hour bridge) |
