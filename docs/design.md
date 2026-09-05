@@ -101,6 +101,38 @@ receiver's initial state.
   `Assistant:` skips the thinking block so the receiver answers directly, as the transformer
   receivers do with `enable_thinking=False`.
 
+## 1c. The bridge at a glance (RNN pair, as trained)
+
+Shapes and parameter counts read from `runs/qwen3p5_9b_to_rwkv7_1p5b/bridge.pt`
+(sender Qwen3.5-9B, `d_s = 4096`, layers 25 and 29 of 32; receiver RWKV-7 1.5B, 24 layers,
+32 heads, head size 64, `C = 2048`):
+
+```
+sender prefill, right-padded                      [B, T, 2 x 4096 = 8192]
+   |  LayerNorm(8192) -> Linear(8192 -> 1024)     8.4M     + sinusoidal positions
+   v
+64 learned queries [64, 1024]
+   |  2 x { cross-attention over sender tokens, self-attention, MLP(1024 -> 4096 -> 1024) }
+   |                                              2 x 16.8M
+   v
+Linear(1024 -> 2048) + LayerNorm x scale           2.1M     "slots" in receiver space
+   |  x gate[2048] (init 0.1)  +  base[64, 2048]  (learned constant slots)
+   v                                                        slots  [B, 64, 2048]
+StateHead: Linear(2048 -> 24 layers x 2 x 32 heads x 64)   201.4M
+   |  per layer l, head h:   S0 = sum_j  v_j k_j^T   over the 64 slots      [64 x 64]
+   |  RMS-normalise, x calib[l] (receiver's measured state RMS) x gain[l] x gate[l]
+   |  + base state [24, 32, 64, 64] (3.1M, initialised from a real prompt's state)
+   |  + learned time-shift vectors att_x / ffn_x [24, 2048]
+   v
+RWKV-7 initial state {att_x, wkv [24, B, 32, 64, 64], ffn_x}  ->  receiver reads the question, writes
+```
+
+249M trainable parameters in total, 201M of them in the state projection. The transformer
+receiver's `KVHead` has the same shape of pipeline with `Linear(1024 -> 28 layers x 2 x 8 heads x 128)`
+(58.7M) producing key/value prefixes instead of a state. After training on the RNN pair the
+slot gate sat at 0.10 and the per-layer state gates between 0.03 and 0.23 (mean 0.16): the
+sender-dependent part of the state is a small perturbation on top of the learned constant.
+
 ## 2. Both models frozen
 
 `models.load_model` calls `requires_grad_(False)` and `eval()` on both models. The optimiser
