@@ -328,11 +328,48 @@ whole measurable content of the channel when the sender holds the complete solut
 learned gates confirm it: the per-layer state gates ended at a mean of 0.15 in both the prefill
 run and this one; the optimiser never scaled the sender-dependent part of the state up.
 
-Conclusion: the bottleneck is the bridge and its objective, not what the sender knows. A
-64-slot resampler writing an RMS-normalised, gated rank-64 update into each layer's state, trained
-by the receiver's next-token loss for 910 steps, does not learn to move even a number. A sharper
-version of this test (answer-only targets: the receiver writes just `\boxed{N}`) and the
-hand-off-heavy run are reported below.
+Re-probed with standardised features (see the probe correction below): answer magnitude R^2 0.67
+in the sender's state, 0.06 in the slots, 0.27 in the receiver's own prompt state.
+
+**Answer-only capacity test: can one number cross?** The receiver is trained to write only
+`The final answer is \boxed{N}.`; the sender reads the question and that answer (the gold
+solution at evaluation). Training takes 15 minutes, answers are 10 tokens.
+
+| system | accuracy | val loss |
+|---|---|---|
+| bridge (sender holds the answer) | 0.124 | 0.3455 |
+| same, shuffled sender state | 0.116 | |
+| same, mean state | 0.116 | |
+| state-tuning control (no sender) | 0.127 | 0.3473 |
+
+Probes on this run (300 problems): answer magnitude R^2 0.70 in the sender state, **0.74 in the
+translated slots**, 0.28 in the receiver's own prompt state.
+
+This is the most informative table in the repository. When the answer is the salient content
+of what the sender read, the resampler *does* put it into the slots, linearly decodable at
+R^2 0.74, and the receiver still writes the same wrong numbers as a receiver that never saw the
+sender: accuracy and validation loss are indistinguishable from the no-sender control. The
+failure is in the last hop, `StateHead` -> frozen RNN read-out, not in the compressor. Two
+concrete suspects: the state is injected *before* the prompt and RWKV-7's per-token decay
+(a factor of 0.55-1.0 per channel per token) erases most of it over a 160-token prompt; and the
+sender-dependent part is RMS-normalised and gated at 0.1 (trained gates end near 0.15), a small
+perturbation by construction. `docs/HANDOFF.md` lays out the tests that separate these.
+
+**Hand-off-heavy training.** Every training problem given a sender-written solution (7,473),
+80% of examples handing off after 1-256 sender tokens (`data.handoff_prob: 0.8`). Validation
+loss 0.2150. Hand-off sweep on the same 160 problems:
+
+| sender tokens k | text hand-off | latent, prefill-trained bridge | latent, hand-off-trained bridge |
+|---|---|---|---|
+| 0 | 0.500 | 0.531 | 0.575 |
+| 32 | 0.594 | 0.487 | 0.569 |
+| 128 | 0.637 | 0.475 | 0.550 |
+| 256 | 0.806 | 0.450 | 0.562 |
+
+Training on partial-reasoning states removes the collapse, but the latent curve is flat: 256
+tokens of sender reasoning that lift text hand-off to 0.81 do nothing for the latent channel.
+The k = 0 accuracy on the full test set was 0.573 at 1024/1319 when this was written (shuffled
+control pending; see `runs/qwen3p5_9b_to_rwkv7_1p5b_handoff/`).
 
 **Why the RNN pair matters even so.** The channel is now *literal*: the sender's state is
 translated into the receiver's initial recurrent state, a fixed-size object that is the RNN's
@@ -363,6 +400,17 @@ pair where "how much work the translation takes" is larger, so it is a fairer te
 *trained* bridge than the same-family pair. Note that the RNN's mean-pooled residual stream is
 not its state; the bridge writes into the WKV matrices, whose geometry this table does not
 measure.
+
+## Probe correction
+
+The observability tables above for the transformer receiver and the first RNN run were computed
+with an unscaled ridge probe and a fixed penalty. The slots live at the receiver's embedding
+scale (about 0.03) while sender states are at about 1, and an unscaled ridge under-reads a
+small-scale feature set (on a synthetic signal the same probe gave R^2 0.16 at scale 1 and 0.04
+at scale 0.03). Probes now standardise features; recorded features are saved so probes can be
+recomputed offline. Re-probed slot R^2 for answer magnitude: standard RNN bridge 0.03 (sender
+0.44), capacity bridge 0.06 (sender 0.67), answer-only bridge 0.74 (sender 0.70). The qualitative
+conclusion for the standard runs stands; the answer-only run is where it changes.
 
 ## Summary against the write-up's claims
 

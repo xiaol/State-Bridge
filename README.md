@@ -179,9 +179,13 @@ Cross-architecture pair, the sender's state written into the RNN's initial recur
   latent hand-off through this bridge falls (0.656 to 0.525): the bridge was trained almost
   only on prefill states.
 - **Observability works as a method and is decisive.** A linear probe reads the answer's
-  magnitude from the sender's state (R^2 0.45) but not from the translated slots (R^2 0.00),
-  and steering the slots along that direction changes nothing downstream. The channel is
-  measurably empty.
+  magnitude from the sender's state (R^2 0.44-0.67) but barely from the translated slots
+  (R^2 0.03-0.06) in the standard runs, and steering the slots changes nothing downstream.
+- **The failure is localised to the last hop.** In a capacity test where the sender reads the
+  answer and the receiver writes only `\boxed{N}`, the bridge does put the answer into its
+  slots (probe R^2 0.74), yet the frozen receiver's accuracy and loss match a control that never
+  saw the sender. `docs/HANDOFF.md` has the plan that targets this (post-prompt state
+  injection, oracle upper bound).
 
 ## Repository layout
 
