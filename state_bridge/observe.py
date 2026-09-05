@@ -24,12 +24,17 @@ from .train import BridgeSystem
 
 
 def ridge_fit(X: np.ndarray, y: np.ndarray, alpha: float = 1.0):
+    """Ridge regression on *standardised* features (dual form).  Standardising matters: the
+    bridge's slots live at the receiver's embedding scale (~0.03), sender states at ~1, and an
+    unscaled ridge with a fixed penalty reads a small-scale feature set as carrying nothing.
+    Returns (w, xm, xs, ym) with prediction ((x - xm) / xs) @ w + ym."""
     xm, ym = X.mean(0), y.mean(0)
-    Xc, yc = X - xm, y - ym
+    xs = X.std(0) + 1e-8
+    Xc, yc = (X - xm) / xs, y - ym
     K = Xc @ Xc.T
     A = np.linalg.solve(K + alpha * np.eye(len(X)), yc)
     w = Xc.T @ A
-    return w, xm, ym
+    return w, xm, xs, ym
 
 
 def ridge_cv_r2(X: np.ndarray, y: np.ndarray, alpha: float = 1.0, folds: int = 5, seed: int = 0) -> float:
@@ -37,8 +42,8 @@ def ridge_cv_r2(X: np.ndarray, y: np.ndarray, alpha: float = 1.0, folds: int = 5
     res, tot = 0.0, 0.0
     for f in range(folds):
         te, tr = idx[f::folds], np.setdiff1d(idx, idx[f::folds])
-        w, xm, ym = ridge_fit(X[tr], y[tr], alpha)
-        pred = (X[te] - xm) @ w + ym
+        w, xm, xs, ym = ridge_fit(X[tr], y[tr], alpha)
+        pred = ((X[te] - xm) / xs) @ w + ym
         res += ((y[te] - pred) ** 2).sum(); tot += ((y[te] - y[tr].mean(0)) ** 2).sum()
     return float(1 - res / (tot + 1e-12))
 
@@ -113,9 +118,13 @@ def run_observe(cfg: dict) -> dict:
             "receiver_correct_majority_baseline": float(max(correct.mean(), 1 - correct.mean())),
         }
 
+    np.savez(out / "observe_features.npz", sender=S, slots=Z, receiver_prompt=Rp, gold_mag=gold_mag, hard=hard, correct=correct,
+             ids=np.array([ex.id for ex in examples]))
+
     # ---- 3. intervene on the channel: steer along the answer-magnitude direction
-    w, xm, ym = ridge_fit(Z, gold_mag, alpha=10.0)
-    direction = torch.tensor(w / (np.linalg.norm(w) + 1e-9), dtype=torch.float32)
+    w, xm, xs, ym = ridge_fit(Z, gold_mag, alpha=10.0)
+    d = w / xs  # gradient of the standardised probe with respect to the raw slot features
+    direction = torch.tensor(d / (np.linalg.norm(d) + 1e-9), dtype=torch.float32)
     slot_rms = math.sqrt(sum(a for a, _ in slots_all) / max(1, sum(b for _, b in slots_all)))
     steer = {"alphas": ocfg["steer_alphas"], "mean_pred_log_magnitude": [], "accuracy": [], "parse_rate": []}
     n_sub = min(len(examples), max(64, ocfg["limit"] // 2))

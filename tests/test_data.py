@@ -31,6 +31,21 @@ def test_summary_buckets():
     assert difficulty_bucket(2) in s["buckets"] and difficulty_bucket(6) in s["buckets"]
 
 
+def test_probe_ridge_is_scale_invariant():
+    """The observability probes must not depend on the feature scale (slots live at ~0.03,
+    sender states at ~1)."""
+    import numpy as np
+
+    from state_bridge.observe import ridge_cv_r2
+
+    rng = np.random.RandomState(0)
+    X = rng.randn(400, 256)
+    w = np.zeros(256); w[:8] = 1.0
+    y = X @ w + 0.2 * rng.randn(400)
+    r_big, r_small = ridge_cv_r2(X, y, 10.0), ridge_cv_r2(0.03 * X, y, 10.0)
+    assert r_big > 0.8 and abs(r_big - r_small) < 1e-6
+
+
 def test_apply_targets_and_build_targets(tmp_path):
     import json
 

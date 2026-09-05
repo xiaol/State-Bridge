@@ -304,6 +304,36 @@ pair 3,202 (x3.9 the receiver). The interpolated single model matching the bridg
 would need about 1.5B parameters and cost 961 GFLOPs, so the bridged pair costs 3.3x more than
 that model.
 
+**Capacity test: the sender is shown the solution (RNN pair).** `docs/next-steps.md`, step 1.
+Same bridge, targets and schedule, but the sender reads the question *and* the worked solution
+(the training target during training, the gold rationale at evaluation) while the receiver
+sees only the question. The sender's state now provably contains the answer; anything above
+the shuffled control had to cross the channel.
+
+| system | val loss | accuracy | tokens per answer |
+|---|---|---|---|
+| bridge, sender reads the solution | 0.1935 | 0.439 | 93 |
+| same, sender state from the wrong problem | | 0.426 | 93 |
+| same, mean state | | 0.437 | 93 |
+| (reference) bridge with prefill only | 0.2148 | 0.560 | 218 |
+| (reference) receiver alone | | 0.530 | 184 |
+
+Two things crossed, and neither was the answer. The validation loss fell by 0.02 nats, and at
+evaluation the receiver's answers shrank from 218 to 93 tokens: the bridge learned that the
+sender had read a *short, terse* text (the gold rationales average about 100 tokens) and made
+the receiver write the same way, which costs it 12 points exactly as gold-style training did in
+phase 1. The shuffled control, whose sender read a different problem's solution, gets the same
+style signal and lands 1.3 points below the real one. That 1.3 points, on 1319 problems, is the
+whole measurable content of the channel when the sender holds the complete solution. The
+learned gates confirm it: the per-layer state gates ended at a mean of 0.15 in both the prefill
+run and this one; the optimiser never scaled the sender-dependent part of the state up.
+
+Conclusion: the bottleneck is the bridge and its objective, not what the sender knows. A
+64-slot resampler writing an RMS-normalised, gated rank-64 update into each layer's state, trained
+by the receiver's next-token loss for 910 steps, does not learn to move even a number. A sharper
+version of this test (answer-only targets: the receiver writes just `\boxed{N}`) and the
+hand-off-heavy run are reported below.
+
 **Why the RNN pair matters even so.** The channel is now *literal*: the sender's state is
 translated into the receiver's initial recurrent state, a fixed-size object that is the RNN's
 entire memory, and the constant part of that state alone lifts the receiver by 2 points (a
