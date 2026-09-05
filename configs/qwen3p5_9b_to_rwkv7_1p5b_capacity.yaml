@@ -1,0 +1,25 @@
+# Capacity test on the RNN pair (docs/next-steps.md, step 1).  Identical to
+# qwen3p5_9b_to_rwkv7_1p5b.yaml except that the sender reads the question *and the worked
+# solution* (training target during training, gold at evaluation) while the receiver sees only
+# the question.  The sender's state now provably contains the answer, so the bridge's only job
+# is translation: bridged minus shuffled measures what the channel can carry at all.
+run_name: qwen3p5_9b_to_rwkv7_1p5b_capacity
+models:
+  sender: {path: /root/x/Qwen3.5-9B, device: "cuda:0", dtype: bfloat16}
+  receiver:
+    path: /root/x/models/rwkv7/rwkv7-g1j-1.5b-20260831-ctx16384.pth
+    tokenizer: /root/x/models/rwkv7/rwkv_vocab_v20230424.txt
+    chat_prefix: " <think>\n</think>\n"
+    device: "cuda:0"
+    dtype: bfloat16
+  sender_layers: [-8, -4]
+  max_prompt_tokens: 768
+  sender_sees_solution: true
+bridge: {type: resampler, injection: state, num_slots: 64, d_model: 1024, depth: 2, heads: 8, residual_base: true, kv_gate_init: 0.1, position: prefix}
+data: {name: gsm8k, path: runs/data/gsm8k, val_size: 200, max_target_tokens: 448,
+       targets: runs/qwen3p5_9b_to_rwkv7_1p5b/targets_train.jsonl}
+train: {epochs: 2, batch_size: 16, lr: 3.0e-4, warmup_steps: 50, log_every: 20, eval_every: 200}
+eval: {batch_size: 16, max_new_tokens: 384, sender_max_new_tokens: 512, modes: [bridged, bridged_shuffled, bridged_ablated]}
+handoff: {ks: [0, 32, 128, 256], limit: 160, batch_size: 16}
+geometry: {num_texts: 256, layer_stride: 4}
+observe: {limit: 500}

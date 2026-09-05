@@ -51,6 +51,7 @@ class BridgeSystem:
         in_dim = self.encoder.out_dim if self.encoder else 1
         self.position = cfg["bridge"]["position"]
         self.max_prompt = mcfg["max_prompt_tokens"]
+        self.sender_sees_solution = bool(mcfg.get("sender_sees_solution", False))
         rc = self.receiver.model.config
         rc = getattr(rc, "text_config", None) or rc
         kv_dims = state_dims = None
@@ -73,8 +74,18 @@ class BridgeSystem:
 
     # ------------------------------------------------------------ helpers
     def sender_prompts(self, batch: list[Example], prefixes: list[str] | None = None) -> list[str]:
+        """Rendered sender prompts.  With ``models.sender_sees_solution`` the sender also reads the
+        worked solution (the training target, or gold at evaluation) as its own assistant turn: a
+        capacity test in which the sender's state provably holds the answer and the receiver,
+        which sees only the question, can succeed only through the channel."""
         assert self.sender is not None
-        return [self.sender.chat_prompt(ex.user_prompt, prefixes[i] if prefixes else None) for i, ex in enumerate(batch)]
+        out = []
+        for i, ex in enumerate(batch):
+            prefix = prefixes[i] if prefixes else None
+            if self.sender_sees_solution and not prefix:
+                prefix = " " + ex.solution.strip()
+            out.append(self.sender.chat_prompt(ex.user_prompt, prefix))
+        return out
 
     def receiver_prompt_ids(self, batch: list[Example], prefixes: list[str] | None = None) -> list[list[int]]:
         texts = [self.receiver.chat_prompt(ex.user_prompt, prefixes[i] if prefixes else None) for i, ex in enumerate(batch)]

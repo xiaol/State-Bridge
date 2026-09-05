@@ -25,6 +25,10 @@ DEFAULTS: dict[str, Any] = {
         # concatenated on the feature axis.
         "sender_layers": [-8, -4],
         "max_prompt_tokens": 512,
+        # Capacity test: the sender also reads the worked solution (training target / gold at
+        # eval); the receiver still sees only the question.  Anything above the shuffled control
+        # then had to cross the channel.
+        "sender_sees_solution": False,
     },
     "bridge": {
         # resampler | per_token | prompt_tuning (control: same slots, no sender input)

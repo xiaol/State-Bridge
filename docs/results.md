@@ -253,7 +253,7 @@ validation loss 0.2150.
 |---|---|---|---|---|---|---|---|
 | receiver alone | 0 | | 0.530 | 0.637 | 0.441 | 0.313 | 184 |
 | state-tuning control (constant initial state, no sender) | 3.4M | 0.2150 | 0.549 | 0.650 | 0.468 | 0.333 | 230 |
-| **bridge, state injection** | 100M | 0.2148 | **0.560** | 0.660 | 0.479 | 0.353 | 218 |
+| **bridge, state injection** | 249M (201M in the state projection) | 0.2148 | **0.560** | 0.660 | 0.479 | 0.353 | 218 |
 | bridge, **shuffled** sender state (control) | | | 0.556 | | | | |
 | bridge, **mean** state (control) | | | 0.574 | 0.667 | 0.506 | 0.353 | 218 |
 | sender alone | 0 | | 0.842 | 0.923 | 0.814 | 0.560 | 371 |
