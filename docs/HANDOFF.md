@@ -17,7 +17,7 @@ Pairs tested, all on GSM8K, all with the same sender (Qwen3.5-9B, 0.842 alone):
 | receiver | injection | receiver alone | best bridge | control that matches it |
 |---|---|---|---|---|
 | Qwen3-0.6B (transformer) | key/value prefixes in every layer | 0.623 | 0.632 | mean-slot 0.641, shuffled 0.629 |
-| RWKV-7 G1 1.5B (RNN) | initial recurrent state | 0.530 | 0.560 (0.575 after hand-off-heavy training, k=0) | mean-state 0.574, shuffled 0.556, state tuning 0.549 |
+| RWKV-7 G1 1.5B (RNN) | initial recurrent state | 0.530 | 0.560 (0.571 after hand-off-heavy training) | mean-state 0.574, shuffled 0.556 / 0.564, state tuning 0.549 |
 
 **Headline so far: no measurable instance-specific information crosses the channel in any
 configuration.** Every accuracy gain is reproduced by a control with no sender (state/prefix
@@ -77,8 +77,8 @@ The earlier "answer magnitude R^2 0.00 in the slots" lines used an unscaled ridg
 penalty; slots live at ~0.03 scale and were under-read. Probes now standardise features
 (`observe.py`, test in `tests/test_data.py`) and save recorded features to
 `observe_features.npz`. Re-probed numbers: standard RNN bridge slots R^2 0.03 (sender 0.44);
-capacity bridge slots 0.06 (sender 0.67); answer-only bridge slots 0.74 (sender 0.70). The
-Qwen-kv re-probe was still running at handoff time (`runs/qwen3p5_9b_to_qwen3_0p6b_kv.observe.log`).
+capacity bridge slots 0.06 (sender 0.67); answer-only bridge slots 0.74 (sender 0.70); transformer
+kv bridge slots 0.11 (sender 0.44).
 
 ## 3. Why the receiver is not reading the state: two concrete hypotheses
 
@@ -121,19 +121,17 @@ A100 (targets are 10 tokens), evaluation ~5 min, and success is unambiguous: bri
 What not to do next: bigger senders, longer schedules of the current design, or thinking mode.
 None of them addresses the last hop.
 
-## 5. State of the host at handoff (2026-09-06 00:40 CST)
+## 5. State of the host at handoff (2026-09-06 02:00 CST)
 
-Running (do not kill other users' jobs; `scripts/qwen35_27b_pipeline.sh` is another session's):
+Nothing of this project is running. All runs are finished and folded into `docs/results.md`:
 
-- `scripts/rwkv7_handoff_heavy.sh` (GPU 1): k = 0 evaluation of the hand-off-heavy bridge,
-  `bridged` at 1024/1319 (0.573), then `bridged_shuffled` (~50 min). Outputs to
-  `runs/qwen3p5_9b_to_rwkv7_1p5b_handoff/eval_*.json`, then `comparison.md`. Fold into
-  `docs/results.md`.
-- `scripts/reprobe.sh` (GPU 0): re-probing the Qwen-kv bridge (~30 min), writes
-  `runs/qwen3p5_9b_to_qwen3_0p6b_kv/observe.md`. Update the transformer probe table in
-  `docs/results.md` with the standardised numbers.
+- Hand-off-heavy bridge at k = 0 on the full test set: bridged 0.571, shuffled 0.564; gap set
+  0.352 vs 0.358. Best absolute RNN number, same verdict.
+- Transformer (Qwen-kv) re-probe with standardised features: slots R^2 0.11 (sender 0.44,
+  receiver's own prompt state 0.08).
 
-Finished, already in `docs/results.md`: everything in section 2 except the two items above.
+Other sessions' jobs (`scripts/qwen35_27b_pipeline.sh` and RNN-StateTuning) share the GPUs;
+check `nvidia-smi` before launching.
 
 ## 6. Operational notes (see also the memory file `env-network-and-gpus`)
 

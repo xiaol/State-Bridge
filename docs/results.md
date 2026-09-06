@@ -368,8 +368,11 @@ loss 0.2150. Hand-off sweep on the same 160 problems:
 
 Training on partial-reasoning states removes the collapse, but the latent curve is flat: 256
 tokens of sender reasoning that lift text hand-off to 0.81 do nothing for the latent channel.
-The k = 0 accuracy on the full test set was 0.573 at 1024/1319 when this was written (shuffled
-control pending; see `runs/qwen3p5_9b_to_rwkv7_1p5b_handoff/`).
+On the full test set at k = 0 this bridge scores **0.571**, the best absolute number for the RNN
+receiver (0.560 for the prefill-trained bridge, 0.549 for state tuning, 0.530 alone), and its
+shuffled-sender control scores 0.564; on the 458-problem gap set the two are 0.352 and 0.358.
+More sender-written training data helps the receiver a little more; the sender's state still
+does not.
 
 **Why the RNN pair matters even so.** The channel is now *literal*: the sender's state is
 translated into the receiver's initial recurrent state, a fixed-size object that is the RNN's
@@ -408,9 +411,11 @@ with an unscaled ridge probe and a fixed penalty. The slots live at the receiver
 scale (about 0.03) while sender states are at about 1, and an unscaled ridge under-reads a
 small-scale feature set (on a synthetic signal the same probe gave R^2 0.16 at scale 1 and 0.04
 at scale 0.03). Probes now standardise features; recorded features are saved so probes can be
-recomputed offline. Re-probed slot R^2 for answer magnitude: standard RNN bridge 0.03 (sender
-0.44), capacity bridge 0.06 (sender 0.67), answer-only bridge 0.74 (sender 0.70). The qualitative
-conclusion for the standard runs stands; the answer-only run is where it changes.
+recomputed offline. Re-probed slot R^2 for answer magnitude: transformer kv bridge 0.11 (sender
+0.44, receiver's own prompt state 0.08), standard RNN bridge 0.03 (sender 0.44), capacity bridge
+0.06 (sender 0.67), answer-only bridge 0.74 (sender 0.70). The qualitative conclusion for the
+standard runs stands (a little of the signal reaches the transformer's slots, none of it reaches
+its answers); the answer-only run is where it changes.
 
 ## Summary against the write-up's claims
 
